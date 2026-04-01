@@ -34,6 +34,32 @@ export type PlaygroundSaveResult = {
   };
 };
 
+export type ExecuteWorkflowNodePayload = {
+  nodeId: string;
+  nodeType: string;
+  nodeData: Record<string, unknown>;
+  context: Record<string, unknown>;
+  runtime: {
+    stepIndex: number;
+    loopState: Record<string, { index: number }>;
+  };
+};
+
+export type ExecuteWorkflowNodeResult = {
+  code: number;
+  message: string;
+  data: {
+    success: boolean;
+    output?: Record<string, unknown>;
+    patchContext?: Record<string, unknown>;
+    metrics?: Record<string, unknown>;
+    error?: {
+      code?: string;
+      message: string;
+    };
+  };
+};
+
 export const getPlaygroundServices = (params?: { keyword?: string }) => {
   return http.request<PlaygroundServiceResult>(
     "get",
@@ -48,6 +74,14 @@ export const savePlaygroundWorkflow = (data: PlaygroundSavePayload) => {
   return http.request<PlaygroundSaveResult>(
     "post",
     "/api/workflow-playground/save",
+    { data }
+  );
+};
+
+export const executeWorkflowNode = (data: ExecuteWorkflowNodePayload) => {
+  return http.request<ExecuteWorkflowNodeResult>(
+    "post",
+    "/api/workflow-playground/execute-node",
     { data }
   );
 };

@@ -6,33 +6,30 @@ defineProps<NodeProps>();
 
 <template>
   <div
-    class="wf-node wf-node-condition"
+    class="wf-node wf-node-loop"
     :class="[
       `is-${data.runStatus ?? 'idle'}`,
       { 'is-current': data.isCurrent }
     ]"
   >
-    <span class="wf-node__eyebrow">CONDITION</span>
+    <span class="wf-node__eyebrow">LOOP</span>
     <strong class="wf-node__title">{{ data.label }}</strong>
     <p class="wf-node__meta">{{ data.expression }}</p>
-    <div class="wf-node__branches">
-      <span :class="{ 'is-active-branch': data.lastRouteKey === 'yes' }"
-        >YES</span
-      >
-      <span :class="{ 'is-active-branch': data.lastRouteKey === 'no' }"
-        >NO</span
-      >
+    <div class="wf-node__chips">
+      <span>{{ data.iterationType }}</span>
+      <span v-if="data.maxIterations">MAX {{ data.maxIterations }}</span>
+      <span>STEP {{ data.loopIndex ?? 0 }}</span>
+      <span v-if="data.lastRouteKey">{{ data.lastRouteKey }}</span>
     </div>
-    <p class="wf-node__runtime">状态 {{ data.runStatus ?? "idle" }}</p>
     <Handle id="in" type="target" :position="Position.Left" />
     <Handle
-      id="yes"
+      id="loop-body"
       type="source"
       :position="Position.Right"
       :style="{ top: '36%' }"
     />
     <Handle
-      id="no"
+      id="done"
       type="source"
       :position="Position.Bottom"
       :style="{ left: '50%' }"

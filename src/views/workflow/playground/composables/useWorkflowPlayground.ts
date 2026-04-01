@@ -23,6 +23,7 @@ import type {
   Node,
   NodeMouseEvent
 } from "@vue-flow/core";
+import { executeWorkflowNode } from "@/api/workflow-playground";
 import {
   buildNodeDataUpdate,
   createNodeDraft,
@@ -30,8 +31,20 @@ import {
   type NodePanelDraft
 } from "../node-panel";
 import {
+  advanceLoopState,
+  applyServiceExecutionResult,
+  createExecutionState,
+  findStartNodeId,
+  markNodeExecutionError,
+  resetExecutionState,
+  resolveNextEdge,
+  startExecutionState,
+  validateRunnableGraph
+} from "../execution-engine";
+import {
   cloneTemplateGraph,
   createDatasetStartNode,
+  createLoopNode,
   createServiceNode
 } from "../resource-library.mjs";
 
@@ -104,6 +117,14 @@ type DragResource =
       id: number | string;
       name: string;
       summary: string;
+    }
+  | {
+      dragKind: "loop";
+      id: number | string;
+      name: string;
+      expression: string;
+      iterationType: string;
+      maxIterations: number;
     };
 
 export function useWorkflowPlayground() {
@@ -120,6 +141,11 @@ export function useWorkflowPlayground() {
 
   // 右侧面板的编辑草稿，跟踪输入框内容
   const draftNodeData = ref<NodePanelDraft>(createNodeDraft(null));
+
+  // 运行时状态：当前执行指针、上下文、节点结果、执行历史
+  const executionState = ref(createExecutionState());
+  const isStepping = ref(false);
+  const isAutoRunning = ref(false);
 
   // ---- 拖拽中间态 ----
   // 记录"当前从服务库拖出来的那条服务"，drop 后消费并清空
@@ -164,9 +190,39 @@ export function useWorkflowPlayground() {
     }
 
     return Object.entries(nextData).some(
-      ([key, value]) => String(selectedNode.value?.data?.[key] ?? "") !== value
+      ([key, value]) =>
+        String(selectedNode.value?.data?.[key] ?? "") !== String(value)
     );
   });
+
+  const canStartExecution = computed(
+    () => !isStepping.value && executionState.value.status !== "running"
+  );
+
+  const canStepExecution = computed(
+    () =>
+      !isStepping.value &&
+      !!executionState.value.currentNodeId &&
+      executionState.value.status !== "success" &&
+      executionState.value.status !== "error"
+  );
+
+  const canRunExecution = computed(() => canStepExecution.value);
+
+  const canPauseExecution = computed(
+    () => executionState.value.status === "running" && isAutoRunning.value
+  );
+
+  const canResetExecution = computed(
+    () =>
+      executionState.value.currentNodeId !== null ||
+      executionState.value.history.length > 0 ||
+      executionState.value.status !== "idle"
+  );
+
+  const executionStepCount = computed(
+    () => executionState.value.history.length
+  );
 
   // ---- Watch ----
 
@@ -179,6 +235,141 @@ export function useWorkflowPlayground() {
     { immediate: true }
   );
 
+  function commitExecutionState(nextState: typeof executionState.value) {
+    executionState.value = nextState;
+    syncNodeRuntimeData();
+  }
+
+  function syncNodeRuntimeData() {
+    const currentNodeId = executionState.value.currentNodeId;
+    const latestHistory = executionState.value.history.at(-1);
+
+    nodes.value = nodes.value.map(node => {
+      const runtimeState = executionState.value.nodeStates[node.id];
+      const isLastNode = latestHistory?.nodeId === node.id;
+
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          runStatus: runtimeState?.status ?? "idle",
+          isCurrent: node.id === currentNodeId,
+          lastRouteKey: isLastNode ? (latestHistory?.routeKey ?? "") : "",
+          loopIndex: executionState.value.loopState[node.id]?.index ?? 0,
+          lastInput: runtimeState?.input,
+          lastErrorMessage: runtimeState?.errorMessage ?? "",
+          lastOutput: runtimeState?.output
+        }
+      };
+    });
+  }
+
+  function readPath(path: string, source: Record<string, unknown>) {
+    if (!path.startsWith("$.")) {
+      return undefined;
+    }
+
+    return path
+      .slice(2)
+      .split(".")
+      .filter(Boolean)
+      .reduce<unknown>((current, key) => {
+        if (!current || typeof current !== "object") {
+          return undefined;
+        }
+
+        return (current as Record<string, unknown>)[key];
+      }, source);
+  }
+
+  function evaluateConditionExpression(expression: string) {
+    if (!expression.trim()) {
+      return false;
+    }
+
+    const executableExpression = expression.replace(
+      /\$\.[A-Za-z0-9_.]+/g,
+      matched => `readPath(${JSON.stringify(matched)}, context)`
+    );
+
+    try {
+      return Boolean(
+        Function(
+          "context",
+          "readPath",
+          `return (${executableExpression});`
+        )(executionState.value.context, readPath)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function getNodeById(nodeId: string | null) {
+    if (!nodeId) {
+      return null;
+    }
+
+    return nodes.value.find(node => node.id === nodeId) ?? null;
+  }
+
+  function markNodeRunning(nodeId: string) {
+    commitExecutionState({
+      ...executionState.value,
+      status: "running",
+      nodeStates: {
+        ...executionState.value.nodeStates,
+        [nodeId]: {
+          ...executionState.value.nodeStates[nodeId],
+          status: "running",
+          input: structuredClone(executionState.value.context),
+          errorMessage: undefined
+        }
+      }
+    });
+  }
+
+  function finalizeStep(
+    currentNodeId: string,
+    edge: Edge | null,
+    routeKey?: string,
+    nextContext?: Record<string, unknown>,
+    nextLoopState = executionState.value.loopState
+  ) {
+    const nextNodeId = edge?.target ?? null;
+    const nextNodeStates: typeof executionState.value.nodeStates = {
+      ...executionState.value.nodeStates,
+      [currentNodeId]: {
+        ...executionState.value.nodeStates[currentNodeId],
+        status: "success"
+      }
+    };
+
+    if (nextNodeId) {
+      nextNodeStates[nextNodeId] = {
+        ...nextNodeStates[nextNodeId],
+        status: "ready"
+      };
+    }
+
+    commitExecutionState({
+      ...executionState.value,
+      status: nextNodeId ? "running" : "success",
+      currentNodeId: nextNodeId,
+      context: nextContext ?? executionState.value.context,
+      loopState: nextLoopState,
+      history: [
+        ...executionState.value.history,
+        {
+          nodeId: currentNodeId,
+          routeKey,
+          edgeId: edge?.id
+        }
+      ],
+      nodeStates: nextNodeStates
+    });
+  }
+
   // ---- MiniMap 颜色 ----
 
   function nodeColor(node: GraphNode) {
@@ -186,6 +377,7 @@ export function useWorkflowPlayground() {
       start: "#bae5d3",
       service: "#bfd3ff",
       condition: "#f0d1a7",
+      loop: "#e8b4ff",
       end: "#efc2c8"
     };
     return colorMap[node.type ?? "default"] ?? "#5b7cc4";
@@ -196,6 +388,7 @@ export function useWorkflowPlayground() {
       start: "#1f8b67",
       service: "#5b7cc4",
       condition: "#b06a1d",
+      loop: "#9c6bce",
       end: "#b45460"
     };
     return strokeMap[node.type ?? "default"] ?? "#bfd3ff";
@@ -237,15 +430,21 @@ export function useWorkflowPlayground() {
       return;
     }
 
+    const routeKey = connection.sourceHandle ?? "default";
+
     addEdges([
       makeEdge({
         id: `edge-${connection.source}-${connection.target}-${edges.value.length + 1}`,
         source: connection.source,
         sourceHandle: connection.sourceHandle ?? undefined,
         target: connection.target,
-        targetHandle: connection.targetHandle ?? undefined
+        targetHandle: connection.targetHandle ?? undefined,
+        data: {
+          routeKey
+        }
       })
     ]);
+    resetExecution();
   }
 
   // ---- 拖放（从服务库拖到画布） ----
@@ -274,6 +473,7 @@ export function useWorkflowPlayground() {
     edges.value = graph.edges ?? [];
     selectedNodeId.value = null;
     selectedEdgeId.value = null;
+    resetExecution();
     ElMessage.success(`已加载训练流：${template.name}`);
   }
 
@@ -304,6 +504,17 @@ export function useWorkflowPlayground() {
         createDatasetStartNode(dragResource.value, position)
       ];
       dragResource.value = null;
+      resetExecution();
+      return;
+    }
+
+    if (dragResource.value.dragKind === "loop") {
+      nodes.value = [
+        ...nodes.value,
+        createLoopNode(dragResource.value, position)
+      ];
+      dragResource.value = null;
+      resetExecution();
       return;
     }
 
@@ -312,6 +523,7 @@ export function useWorkflowPlayground() {
       createServiceNode(dragResource.value, position)
     ];
     dragResource.value = null;
+    resetExecution();
   }
 
   // ---- 节点编辑（右侧面板） ----
@@ -332,19 +544,14 @@ export function useWorkflowPlayground() {
     }
 
     updateNodeData(selectedNode.value.id, nextData);
+    resetExecution();
   }
-  /** 校验流程图完整性：至少一个开始节点和一个结束节点 */
-  function validateGraph(): string | null {
-    const hasStart = nodes.value.some(node => node.type === "start");
-    const hasEnd = nodes.value.some(node => node.type === "end");
 
-    if (!hasStart) {
-      return "流程图缺少开始节点";
-    }
-    if (!hasEnd) {
-      return "流程图缺少结束节点";
-    }
-    return null;
+  function validateGraph(): string | null {
+    return validateRunnableGraph({
+      nodes: nodes.value,
+      edges: edges.value
+    });
   }
 
   function handleSaveToLocal() {
@@ -369,7 +576,218 @@ export function useWorkflowPlayground() {
     const graph = JSON.parse(raw);
     nodes.value = graph.nodes ?? [];
     edges.value = graph.edges ?? [];
+    resetExecution();
     ElMessage.success("已从本地恢复");
+  }
+
+  async function startExecution(initialContext: Record<string, unknown> = {}) {
+    const error = validateGraph();
+    if (error) {
+      ElMessage.error(error);
+      return;
+    }
+
+    const nextState = startExecutionState({
+      nodes: nodes.value,
+      initialContext
+    });
+
+    if (!nextState.currentNodeId || !findStartNodeId(nodes.value)) {
+      ElMessage.error("流程图缺少开始节点");
+      return;
+    }
+
+    isAutoRunning.value = false;
+    commitExecutionState(nextState);
+  }
+
+  async function stepExecution() {
+    if (isStepping.value) {
+      return;
+    }
+
+    if (!executionState.value.currentNodeId) {
+      return;
+    }
+
+    const currentNode = getNodeById(executionState.value.currentNodeId);
+    if (!currentNode) {
+      return;
+    }
+
+    isStepping.value = true;
+    try {
+      markNodeRunning(currentNode.id);
+
+      if (currentNode.type === "end") {
+        finalizeStep(currentNode.id, null);
+        return;
+      }
+
+      if (currentNode.type === "start") {
+        const edge = resolveNextEdge({
+          currentNode,
+          edges: edges.value
+        });
+        finalizeStep(currentNode.id, edge as Edge | null, "default");
+        return;
+      }
+
+      if (currentNode.type === "condition") {
+        const routeKey = evaluateConditionExpression(
+          String(currentNode.data?.expression ?? "")
+        )
+          ? "yes"
+          : "no";
+        const edge = resolveNextEdge({
+          currentNode,
+          edges: edges.value,
+          routeKey
+        });
+        finalizeStep(currentNode.id, edge as Edge | null, routeKey);
+        return;
+      }
+
+      if (currentNode.type === "loop") {
+        const loopResult = advanceLoopState({
+          nodeId: currentNode.id,
+          nodeData: (currentNode.data ?? {}) as Record<string, unknown>,
+          context: executionState.value.context,
+          loopState: executionState.value.loopState
+        });
+
+        let nextContext = executionState.value.context;
+        if (loopResult.routeKey === "loop-body") {
+          const itemsPath = String(currentNode.data?.itemsPath ?? "");
+          const itemName = String(currentNode.data?.itemName ?? "");
+          const items = Array.isArray(readPath(itemsPath, nextContext))
+            ? (readPath(itemsPath, nextContext) as unknown[])
+            : [];
+          const nextIndex =
+            (loopResult.loopState[currentNode.id]?.index ?? 1) - 1;
+          if (itemName) {
+            nextContext = {
+              ...nextContext,
+              [itemName]: items[nextIndex]
+            };
+          }
+        }
+
+        const edge = resolveNextEdge({
+          currentNode,
+          edges: edges.value,
+          routeKey: loopResult.routeKey
+        });
+        finalizeStep(
+          currentNode.id,
+          edge as Edge | null,
+          loopResult.routeKey,
+          nextContext,
+          loopResult.loopState
+        );
+        return;
+      }
+
+      if (currentNode.type === "service") {
+        const result = await executeWorkflowNode({
+          nodeId: currentNode.id,
+          nodeType: currentNode.type,
+          nodeData: (currentNode.data ?? {}) as Record<string, unknown>,
+          context: executionState.value.context,
+          runtime: {
+            stepIndex: executionState.value.history.length,
+            loopState: executionState.value.loopState
+          }
+        });
+
+        if (!result.data.success) {
+          commitExecutionState(
+            markNodeExecutionError(executionState.value, {
+              nodeId: currentNode.id,
+              message: result.data.error?.message ?? "服务执行失败"
+            })
+          );
+          isAutoRunning.value = false;
+          return;
+        }
+
+        commitExecutionState(
+          applyServiceExecutionResult(executionState.value, {
+            nodeId: currentNode.id,
+            nodeData: (currentNode.data ?? {}) as Record<string, unknown>,
+            output: result.data.output,
+            patchContext: result.data.patchContext,
+            metrics: result.data.metrics
+          })
+        );
+
+        const edge = resolveNextEdge({
+          currentNode,
+          edges: edges.value,
+          routeKey: "default"
+        });
+        finalizeStep(currentNode.id, edge as Edge | null, "default");
+      }
+    } catch (error) {
+      commitExecutionState(
+        markNodeExecutionError(executionState.value, {
+          nodeId: currentNode.id,
+          message: error instanceof Error ? error.message : "服务执行失败"
+        })
+      );
+      isAutoRunning.value = false;
+    } finally {
+      isStepping.value = false;
+    }
+  }
+
+  async function runExecution() {
+    if (isAutoRunning.value) {
+      return;
+    }
+
+    if (!executionState.value.currentNodeId) {
+      await startExecution();
+    } else if (executionState.value.status === "paused") {
+      commitExecutionState({
+        ...executionState.value,
+        status: "running"
+      });
+    }
+
+    if (!executionState.value.currentNodeId) {
+      return;
+    }
+
+    isAutoRunning.value = true;
+
+    while (
+      isAutoRunning.value &&
+      executionState.value.currentNodeId &&
+      executionState.value.status !== "success" &&
+      executionState.value.status !== "error"
+    ) {
+      await stepExecution();
+    }
+
+    isAutoRunning.value = false;
+  }
+
+  function pauseExecution() {
+    isAutoRunning.value = false;
+
+    if (executionState.value.status === "running") {
+      commitExecutionState({
+        ...executionState.value,
+        status: "paused"
+      });
+    }
+  }
+
+  function resetExecution() {
+    isStepping.value = false;
+    isAutoRunning.value = false;
+    commitExecutionState(resetExecutionState(createExecutionState()));
   }
 
   // ---- 删除 ----
@@ -382,6 +800,7 @@ export function useWorkflowPlayground() {
 
     removeNodes([selectedNode.value.id], true);
     selectedNodeId.value = null;
+    resetExecution();
   }
 
   /** 删除当前选中的边 */
@@ -392,6 +811,7 @@ export function useWorkflowPlayground() {
 
     removeEdges([selectedEdgeId.value]);
     selectedEdgeId.value = null;
+    resetExecution();
   }
 
   /** 点击边 → 选中边 */
@@ -408,11 +828,19 @@ export function useWorkflowPlayground() {
     selectedNodeId,
     draftNodeData,
     dragResource,
+    executionState,
+    isStepping,
 
     // 计算属性
     selectedNode,
     selectedNodeIsService,
     canSaveNodeData,
+    canStartExecution,
+    canStepExecution,
+    canRunExecution,
+    canPauseExecution,
+    canResetExecution,
+    executionStepCount,
 
     // MiniMap 颜色
     nodeColor,
@@ -438,6 +866,13 @@ export function useWorkflowPlayground() {
     // 保存 / 恢复
     handleSaveToLocal,
     handleRestoreFromLocal,
+
+    // 执行
+    startExecution,
+    stepExecution,
+    runExecution,
+    pauseExecution,
+    resetExecution,
 
     // 删除
     handleDeleteSelectedNode,

@@ -29,6 +29,7 @@ import "@vue-flow/controls/dist/style.css";
 // 自定义节点组件
 import ConditionNode from "./nodes/ConditionNode.vue";
 import EndNode from "./nodes/EndNode.vue";
+import LoopNode from "./nodes/LoopNode.vue";
 import ServiceNode from "./nodes/ServiceNode.vue";
 import StartNode from "./nodes/StartNode.vue";
 
@@ -40,6 +41,7 @@ import WorkflowCanvas from "./components/WorkflowCanvas.vue";
 // 核心状态和行为
 import { useWorkflowPlayground } from "./composables/useWorkflowPlayground";
 import {
+  mockLoops,
   mockWorkflowTemplates,
   workflowResourceTabs
 } from "./resource-library.mjs";
@@ -53,6 +55,7 @@ const nodeTypes = {
   start: markRaw(StartNode),
   end: markRaw(EndNode),
   condition: markRaw(ConditionNode),
+  loop: markRaw(LoopNode),
   service: markRaw(ServiceNode)
 };
 
@@ -81,7 +84,7 @@ function onResourceDragStart(item: {
   name: string;
   summary: string;
   badge?: string;
-  dragKind: "template" | "service" | "dataset";
+  dragKind: "template" | "service" | "dataset" | "loop";
   serviceType?: string;
   graph?: {
     nodes?: unknown[];
@@ -93,7 +96,7 @@ function onResourceDragStart(item: {
 
 async function onTemplateClick(item: {
   name: string;
-  dragKind: "template" | "service" | "dataset";
+  dragKind: "template" | "service" | "dataset" | "loop";
   graph?: { nodes?: unknown[]; edges?: unknown[] };
 }) {
   if (item.dragKind !== "template") return;
@@ -127,9 +130,15 @@ const resourceItems = computed(() => {
     return dynamicDatasets.value;
   }
 
-  return dynamicServices.value;
+  return [
+    ...dynamicServices.value,
+    ...mockLoops.map(item => ({
+      ...item,
+      dragKind: "loop" as const,
+      badge: item.category
+    }))
+  ];
 });
-
 // ---------------------------------------------------------------------------
 // 从 composable 解构所有状态和方法
 // ---------------------------------------------------------------------------
@@ -138,10 +147,17 @@ const {
   nodes,
   edges,
   draftNodeData,
+  executionState,
   // 计算属性
   selectedNode,
   selectedNodeIsService,
   canSaveNodeData,
+  canStartExecution,
+  canStepExecution,
+  canRunExecution,
+  canPauseExecution,
+  canResetExecution,
+  executionStepCount,
   // MiniMap 颜色
   nodeColor,
   nodeStrokeColor,
@@ -161,6 +177,12 @@ const {
   // 保存 / 恢复
   handleSaveToLocal,
   handleRestoreFromLocal,
+  // 执行
+  startExecution,
+  stepExecution,
+  runExecution,
+  pauseExecution,
+  resetExecution,
   // 删除
   handleDeleteSelectedNode,
   handleDeleteSelectedEdge,
@@ -191,6 +213,16 @@ function onNodeClick(event: NodeMouseEvent) {
 function onEdgeClick(event: EdgeMouseEvent) {
   handleEdgeClick(event);
 }
+
+const currentExecutionNodeLabel = computed(() => {
+  const currentNodeId = executionState.value.currentNodeId;
+  if (!currentNodeId) {
+    return "";
+  }
+
+  const currentNode = nodes.value.find(node => node.id === currentNodeId);
+  return String(currentNode?.data?.label ?? currentNodeId);
+});
 </script>
 
 <template>
@@ -214,6 +246,15 @@ function onEdgeClick(event: EdgeMouseEvent) {
       :node-types="nodeTypes"
       :node-color="nodeColor"
       :node-stroke-color="nodeStrokeColor"
+      :execution-status="executionState.status"
+      :can-start="canStartExecution"
+      :can-step="canStepExecution"
+      :can-run="canRunExecution"
+      :can-pause="canPauseExecution"
+      :can-reset="canResetExecution"
+      :current-node-id="executionState.currentNodeId"
+      :current-node-label="currentExecutionNodeLabel"
+      :executed-steps="executionStepCount"
       @init="handleInit"
       @connect="onConnect"
       @node-click="onNodeClick"
@@ -221,6 +262,11 @@ function onEdgeClick(event: EdgeMouseEvent) {
       @pane-click="handlePaneClick"
       @canvas-drop="onCanvasDrop"
       @canvas-drag-over="onCanvasDragOver"
+      @start-execution="startExecution"
+      @step-execution="stepExecution"
+      @run-execution="runExecution"
+      @pause-execution="pauseExecution"
+      @reset-execution="resetExecution"
     />
 
     <!-- 右侧：节点详情和编辑 -->
@@ -229,6 +275,7 @@ function onEdgeClick(event: EdgeMouseEvent) {
       :selected-node="selectedNode"
       :selected-node-is-service="selectedNodeIsService"
       :can-save="canSaveNodeData"
+      :execution-context="executionState.context"
       @save="handleSaveNode"
       @delete="handleDeleteSelectedNode"
     />
@@ -279,6 +326,30 @@ function onEdgeClick(event: EdgeMouseEvent) {
     border-color 0.2s ease,
     box-shadow 0.2s ease,
     transform 0.2s ease;
+}
+
+:deep(.wf-node.is-current) {
+  border-color: var(--wf-node-accent);
+  box-shadow:
+    0 0 0 2px rgb(255 255 255 / 88%),
+    0 0 0 5px color-mix(in srgb, var(--wf-node-accent) 28%, transparent),
+    0 24px 48px var(--wf-node-shadow);
+}
+
+:deep(.wf-node.is-running) {
+  transform: translateY(-2px);
+}
+
+:deep(.wf-node.is-success) {
+  border-color: color-mix(in srgb, var(--wf-node-accent) 68%, #5ad39a);
+}
+
+:deep(.wf-node.is-error) {
+  border-color: #d36a76;
+  box-shadow:
+    0 0 0 2px rgb(255 255 255 / 88%),
+    0 0 0 5px rgb(211 106 118 / 18%),
+    0 24px 48px rgb(180 84 96 / 16%);
 }
 
 :deep(.wf-node::before) {
@@ -341,6 +412,23 @@ function onEdgeClick(event: EdgeMouseEvent) {
   border-radius: 999px;
 }
 
+:deep(.wf-node__runtime) {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #425677;
+}
+
+:deep(.wf-node__runtime-error) {
+  color: #b45460;
+}
+
+:deep(.wf-node__branches .is-active-branch) {
+  color: #fff;
+  background: var(--wf-node-accent);
+  border-color: transparent;
+}
+
 /* ---- 节点类型专属样式 ---- */
 
 :deep(.wf-node-start) {
@@ -385,6 +473,17 @@ function onEdgeClick(event: EdgeMouseEvent) {
   width: 188px;
 }
 
+:deep(.wf-node-loop) {
+  --wf-node-accent: #9c6bce;
+  --wf-node-accent-soft: #f3e5ff;
+  --wf-node-edge: #e8b4ff;
+  --wf-node-edge-strong: #d8a1ff;
+  --wf-node-surface: linear-gradient(180deg, #fff 0%, #faf7ff 100%);
+  --wf-node-shadow: rgb(156 107 206 / 12%);
+
+  width: 224px;
+}
+
 /* start / end 节点没有 meta 摘要行，去掉底部间距 */
 :deep(.wf-node-start .wf-node__meta),
 :deep(.wf-node-end .wf-node__meta) {
@@ -405,6 +504,7 @@ function onEdgeClick(event: EdgeMouseEvent) {
 :deep(.vue-flow__node-start),
 :deep(.vue-flow__node-service),
 :deep(.vue-flow__node-condition),
+:deep(.vue-flow__node-loop),
 :deep(.vue-flow__node-end) {
   padding: 0;
   background: transparent;
@@ -417,6 +517,7 @@ function onEdgeClick(event: EdgeMouseEvent) {
 :deep(.vue-flow__node-start:hover .wf-node),
 :deep(.vue-flow__node-service:hover .wf-node),
 :deep(.vue-flow__node-condition:hover .wf-node),
+:deep(.vue-flow__node-loop:hover .wf-node),
 :deep(.vue-flow__node-end:hover .wf-node) {
   border-color: var(--wf-node-edge-strong);
   box-shadow:
@@ -432,6 +533,8 @@ function onEdgeClick(event: EdgeMouseEvent) {
 :deep(.vue-flow__node-service:focus-visible .wf-node),
 :deep(.vue-flow__node-condition.selected .wf-node),
 :deep(.vue-flow__node-condition:focus-visible .wf-node),
+:deep(.vue-flow__node-loop.selected .wf-node),
+:deep(.vue-flow__node-loop:focus-visible .wf-node),
 :deep(.vue-flow__node-end.selected .wf-node),
 :deep(.vue-flow__node-end:focus-visible .wf-node) {
   border-color: var(--wf-node-accent);

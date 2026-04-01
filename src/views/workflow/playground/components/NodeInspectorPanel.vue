@@ -22,16 +22,18 @@
   - 可以独立测试：传入不同 props 就能渲染不同状态
 -->
 <script setup lang="ts">
+import { computed } from "vue";
 import type { Node } from "@vue-flow/core";
 import type { NodePanelDraft } from "../node-panel";
 
-defineProps<{
+const props = defineProps<{
   /** 当前选中的节点，null 表示未选中任何节点 */
   selectedNode: Node | null;
   /** 选中的是否为 service 类型 */
   selectedNodeIsService: boolean;
   /** 保存按钮是否可用 */
   canSave: boolean;
+  executionContext: Record<string, unknown>;
 }>();
 
 const draftNodeData = defineModel<NodePanelDraft>("draftNodeData", {
@@ -41,7 +43,22 @@ const draftNodeData = defineModel<NodePanelDraft>("draftNodeData", {
 defineEmits<{
   /** 用户请求保存编辑内容 */
   save: [];
+  /** 用户请求删除当前选中节点 */
+  delete: [];
 }>();
+
+const selectedNodeIsCondition = computed(
+  () => props.selectedNode?.type === "condition"
+);
+const selectedNodeIsLoop = computed(() => props.selectedNode?.type === "loop");
+
+function formatJson(value: unknown) {
+  if (value == null || value === "") {
+    return "暂无";
+  }
+
+  return JSON.stringify(value, null, 2);
+}
 </script>
 
 <template>
@@ -54,8 +71,8 @@ defineEmits<{
           {{ selectedNode.data?.label ?? selectedNode.id }}
         </strong>
         <p class="panel-card__hint">
-          点击不同节点后，这里的上下文会切换。保存时只会更新当前节点的
-          `data.label`。
+          点击不同节点后，这里的上下文会切换。保存时只会更新当前节点的 `data`
+          配置，并同步清空当前运行态。
         </p>
 
         <!-- 节点元信息（只读） -->
@@ -104,7 +121,112 @@ defineEmits<{
               @keydown.enter.prevent="$emit('save')"
             />
           </label>
+
+          <label class="panel-field">
+            <span class="panel-field__label">输出上下文 Key</span>
+            <input
+              v-model="draftNodeData.outputKey"
+              class="panel-input"
+              type="text"
+              placeholder="例如 preprocessResult"
+              @keydown.enter.prevent="$emit('save')"
+            />
+          </label>
         </template>
+
+        <template v-if="selectedNodeIsCondition">
+          <label class="panel-field">
+            <span class="panel-field__label">条件表达式</span>
+            <textarea
+              v-model="draftNodeData.expression"
+              class="panel-textarea"
+              rows="4"
+              placeholder="例如 $.preprocessResult.count > 1000"
+            />
+          </label>
+        </template>
+
+        <template v-if="selectedNodeIsLoop">
+          <label class="panel-field">
+            <span class="panel-field__label">循环表达式</span>
+            <textarea
+              v-model="draftNodeData.expression"
+              class="panel-textarea"
+              rows="3"
+              placeholder="例如 for item in dataset"
+            />
+          </label>
+
+          <label class="panel-field">
+            <span class="panel-field__label">集合路径</span>
+            <input
+              v-model="draftNodeData.itemsPath"
+              class="panel-input"
+              type="text"
+              placeholder="例如 $.items"
+              @keydown.enter.prevent="$emit('save')"
+            />
+          </label>
+
+          <label class="panel-field">
+            <span class="panel-field__label">循环变量名</span>
+            <input
+              v-model="draftNodeData.itemName"
+              class="panel-input"
+              type="text"
+              placeholder="例如 item"
+              @keydown.enter.prevent="$emit('save')"
+            />
+          </label>
+
+          <label class="panel-field">
+            <span class="panel-field__label">最大迭代次数</span>
+            <input
+              v-model="draftNodeData.maxIterations"
+              class="panel-input"
+              type="number"
+              min="1"
+              placeholder="例如 1000"
+              @keydown.enter.prevent="$emit('save')"
+            />
+          </label>
+        </template>
+
+        <div class="panel-runtime">
+          <span class="panel-runtime__title">运行态</span>
+          <dl class="panel-card__meta">
+            <div>
+              <dt>节点状态</dt>
+              <dd>{{ selectedNode.data?.runStatus ?? "idle" }}</dd>
+            </div>
+            <div>
+              <dt>命中分支</dt>
+              <dd>{{ selectedNode.data?.lastRouteKey || "暂无" }}</dd>
+            </div>
+          </dl>
+          <label class="panel-field">
+            <span class="panel-field__label">最近一次输入</span>
+            <pre class="panel-code">{{
+              formatJson(selectedNode.data?.lastInput)
+            }}</pre>
+          </label>
+          <label class="panel-field">
+            <span class="panel-field__label">最近一次输出</span>
+            <pre class="panel-code">{{
+              formatJson(selectedNode.data?.lastOutput)
+            }}</pre>
+          </label>
+          <label class="panel-field">
+            <span class="panel-field__label">最近一次错误</span>
+            <pre class="panel-code">{{
+              formatJson(selectedNode.data?.lastErrorMessage)
+            }}</pre>
+          </label>
+          <label class="panel-field">
+            <span class="panel-field__label">当前上下文</span>
+            <pre class="panel-code">{{ formatJson(executionContext) }}</pre>
+          </label>
+        </div>
 
         <button
           class="panel-save"
@@ -113,6 +235,11 @@ defineEmits<{
           @click="$emit('save')"
         >
           保存节点配置
+        </button>
+
+        <!-- 删除按钮 -->
+        <button class="panel-delete" type="button" @click="$emit('delete')">
+          删除此节点
         </button>
       </template>
 
@@ -212,6 +339,22 @@ defineEmits<{
   color: #314463;
 }
 
+.panel-runtime {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: rgb(248 251 255 / 90%);
+  border: 1px solid #dbe7ff;
+  border-radius: 14px;
+}
+
+.panel-runtime__title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #5b7cc4;
+  letter-spacing: 0.08em;
+}
+
 .panel-input {
   width: 100%;
   padding: 11px 13px;
@@ -252,6 +395,20 @@ defineEmits<{
   box-shadow: 0 0 0 3px rgb(91 124 196 / 15%);
 }
 
+.panel-code {
+  padding: 12px;
+  margin: 0;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #2b3d5d;
+  word-break: break-word;
+  white-space: pre-wrap;
+  background: #fff;
+  border: 1px solid #d6e2ff;
+  border-radius: 12px;
+}
+
 .panel-save {
   width: 100%;
   padding: 12px 16px;
@@ -277,6 +434,26 @@ defineEmits<{
   cursor: not-allowed;
   box-shadow: none;
   opacity: 0.5;
+}
+
+.panel-delete {
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #b45460;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid #efc2c8;
+  border-radius: 12px;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.panel-delete:hover {
+  background: #ffe5e8;
+  border-color: #d98592;
 }
 
 @media (width <= 1080px) {
