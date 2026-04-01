@@ -13,21 +13,27 @@
  */
 
 import { computed, ref, watch } from "vue";
+import { ElMessage } from "element-plus";
 import { MarkerType, useVueFlow } from "@vue-flow/core";
 import type {
   Connection,
   Edge,
+  EdgeMouseEvent,
   GraphNode,
   Node,
   NodeMouseEvent
 } from "@vue-flow/core";
-import type { PlaygroundService } from "@/api/workflow-playground";
 import {
   buildNodeDataUpdate,
   createNodeDraft,
   isServiceNode,
   type NodePanelDraft
 } from "../node-panel";
+import {
+  cloneTemplateGraph,
+  createDatasetStartNode,
+  createServiceNode
+} from "../resource-library.mjs";
 
 // ---------------------------------------------------------------------------
 // 初始数据
@@ -80,6 +86,26 @@ const initialEdges: Edge[] = [
 // Composable
 // ---------------------------------------------------------------------------
 
+type DragResource =
+  | {
+      dragKind: "template";
+      name: string;
+      graph: { nodes?: Node[]; edges?: Edge[] };
+    }
+  | {
+      dragKind: "service";
+      id: number | string;
+      name: string;
+      summary: string;
+      serviceType: string;
+    }
+  | {
+      dragKind: "dataset";
+      id: number | string;
+      name: string;
+      summary: string;
+    };
+
 export function useWorkflowPlayground() {
   // ---- 核心状态 ----
   // 用 ref 持有，通过 v-model:nodes / v-model:edges 与 VueFlow 双向绑定
@@ -89,16 +115,26 @@ export function useWorkflowPlayground() {
   // 当前选中节点 ID（null 表示未选中）
   const selectedNodeId = ref<string | null>(null);
 
+  // 当前选中边 ID（null 表示未选中）
+  const selectedEdgeId = ref<string | null>(null);
+
   // 右侧面板的编辑草稿，跟踪输入框内容
   const draftNodeData = ref<NodePanelDraft>(createNodeDraft(null));
 
   // ---- 拖拽中间态 ----
   // 记录"当前从服务库拖出来的那条服务"，drop 后消费并清空
-  const dragService = ref<PlaygroundService | null>(null);
+  const dragResource = ref<DragResource | null>(null);
 
   // ---- VueFlow 实例方法 ----
-  const { addEdges, fitView, screenToFlowCoordinate, updateNodeData } =
-    useVueFlow();
+  const {
+    addEdges,
+    fitView,
+    screenToFlowCoordinate,
+    updateNodeData,
+    toObject,
+    removeNodes,
+    removeEdges
+  } = useVueFlow();
 
   // ---- 计算属性 ----
 
@@ -215,8 +251,8 @@ export function useWorkflowPlayground() {
   // ---- 拖放（从服务库拖到画布） ----
 
   /** 拖拽开始：记住正在拖的是哪个服务 */
-  function handleDragStart(service: PlaygroundService) {
-    dragService.value = service;
+  function handleDragStart(resource: DragResource) {
+    dragResource.value = resource;
   }
 
   /** 画布 dragover：必须 preventDefault 才能接收 drop */
@@ -224,10 +260,23 @@ export function useWorkflowPlayground() {
     event.preventDefault();
   }
 
+  /** 用训练流模板替换当前画布（点击或拖入均可调用） */
+  function applyTemplate(template: {
+    name: string;
+    graph: { nodes?: Node[]; edges?: Edge[] };
+  }) {
+    const graph = cloneTemplateGraph(template);
+    nodes.value = graph.nodes ?? [];
+    edges.value = graph.edges ?? [];
+    selectedNodeId.value = null;
+    selectedEdgeId.value = null;
+    ElMessage.success(`已加载训练流：${template.name}`);
+  }
+
   /** 画布 drop：把屏幕坐标转成画布坐标，创建新服务节点 */
   function handleCanvasDrop(event: DragEvent) {
     event.preventDefault();
-    if (!dragService.value) {
+    if (!dragResource.value) {
       return;
     }
 
@@ -239,22 +288,26 @@ export function useWorkflowPlayground() {
     });
 
     // 不可变更新：创建新数组，不修改原数组
+    if (dragResource.value.dragKind === "template") {
+      applyTemplate(dragResource.value);
+      dragResource.value = null;
+      return;
+    }
+
+    if (dragResource.value.dragKind === "dataset") {
+      nodes.value = [
+        ...nodes.value,
+        createDatasetStartNode(dragResource.value, position)
+      ];
+      dragResource.value = null;
+      return;
+    }
+
     nodes.value = [
       ...nodes.value,
-      {
-        id: `service-${Date.now()}`,
-        type: "service",
-        position,
-        data: {
-          label: dragService.value.name,
-          summary: dragService.value.summary,
-          serviceType: dragService.value.serviceType,
-          serviceId: dragService.value.id
-        }
-      }
+      createServiceNode(dragResource.value, position)
     ];
-
-    dragService.value = null;
+    dragResource.value = null;
   }
 
   // ---- 节点编辑（右侧面板） ----
@@ -276,6 +329,71 @@ export function useWorkflowPlayground() {
 
     updateNodeData(selectedNode.value.id, nextData);
   }
+  /** 校验流程图完整性：至少一个开始节点和一个结束节点 */
+  function validateGraph(): string | null {
+    const hasStart = nodes.value.some(node => node.type === "start");
+    const hasEnd = nodes.value.some(node => node.type === "end");
+
+    if (!hasStart) {
+      return "流程图缺少开始节点";
+    }
+    if (!hasEnd) {
+      return "流程图缺少结束节点";
+    }
+    return null;
+  }
+
+  function handleSaveToLocal() {
+    const error = validateGraph();
+    if (error) {
+      ElMessage.error(error);
+      return;
+    }
+
+    const currentGraph = toObject();
+    localStorage.setItem("vue-flow-demo", JSON.stringify(currentGraph));
+    ElMessage.success("已保存到本地");
+  }
+
+  function handleRestoreFromLocal() {
+    const raw = localStorage.getItem("vue-flow-demo");
+    if (!raw) {
+      ElMessage.warning("没有找到本地保存的数据");
+      return;
+    }
+
+    const graph = JSON.parse(raw);
+    nodes.value = graph.nodes ?? [];
+    edges.value = graph.edges ?? [];
+    ElMessage.success("已从本地恢复");
+  }
+
+  // ---- 删除 ----
+
+  /** 删除当前选中的节点（第二个参数 true 表示同时删除关联边） */
+  function handleDeleteSelectedNode() {
+    if (!selectedNode.value) {
+      return;
+    }
+
+    removeNodes([selectedNode.value.id], true);
+    selectedNodeId.value = null;
+  }
+
+  /** 删除当前选中的边 */
+  function handleDeleteSelectedEdge() {
+    if (!selectedEdgeId.value) {
+      return;
+    }
+
+    removeEdges([selectedEdgeId.value]);
+    selectedEdgeId.value = null;
+  }
+
+  /** 点击边 → 选中边 */
+  function handleEdgeClick({ edge }: EdgeMouseEvent) {
+    selectedEdgeId.value = edge.id;
+  }
 
   // ---- 返回 ----
   // 所有子组件通过解构这个返回值来获取需要的状态和方法
@@ -285,7 +403,7 @@ export function useWorkflowPlayground() {
     edges,
     selectedNodeId,
     draftNodeData,
-    dragService,
+    dragResource,
 
     // 计算属性
     selectedNode,
@@ -305,11 +423,24 @@ export function useWorkflowPlayground() {
     handleConnect,
 
     // 拖放
+    applyTemplate,
     handleDragStart,
     handleCanvasDragOver,
     handleCanvasDrop,
 
     // 节点编辑
-    handleSaveNode
+    handleSaveNode,
+
+    // 保存 / 恢复
+    handleSaveToLocal,
+    handleRestoreFromLocal,
+
+    // 删除
+    handleDeleteSelectedNode,
+    handleDeleteSelectedEdge,
+
+    // 边选中
+    selectedEdgeId,
+    handleEdgeClick
   };
 }
