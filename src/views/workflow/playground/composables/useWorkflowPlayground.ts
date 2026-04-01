@@ -266,6 +266,10 @@ export function useWorkflowPlayground() {
     graph: { nodes?: Node[]; edges?: Edge[] };
   }) {
     const graph = cloneTemplateGraph(template);
+    if (!graph.nodes?.length && !graph.edges?.length) {
+      ElMessage.warning(`模板「${template.name}」内容为空，未加载`);
+      return;
+    }
     nodes.value = graph.nodes ?? [];
     edges.value = graph.edges ?? [];
     selectedNodeId.value = null;
