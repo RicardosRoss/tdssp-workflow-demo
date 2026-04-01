@@ -38,6 +38,7 @@ import {
   markNodeExecutionError,
   resetExecutionState,
   resolveNextEdge,
+  snapshotExecutionContext,
   startExecutionState,
   validateRunnableGraph
 } from "../execution-engine";
@@ -322,7 +323,7 @@ export function useWorkflowPlayground() {
         [nodeId]: {
           ...executionState.value.nodeStates[nodeId],
           status: "running",
-          input: structuredClone(executionState.value.context),
+          input: snapshotExecutionContext(executionState.value.context),
           errorMessage: undefined
         }
       }

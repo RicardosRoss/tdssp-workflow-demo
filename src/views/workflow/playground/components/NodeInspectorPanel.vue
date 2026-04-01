@@ -264,9 +264,9 @@ function formatJson(value: unknown) {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  height: 100%;
-  min-height: 70vh;
+  height: 70vh;
   padding: 22px 20px;
+  overflow-y: auto;
   background:
     radial-gradient(
       circle at top right,
@@ -462,6 +462,7 @@ function formatJson(value: unknown) {
   }
 
   .panel-card {
+    height: auto;
     min-height: auto;
   }
 }

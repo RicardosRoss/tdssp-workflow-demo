@@ -31,6 +31,89 @@ const services = [
   }
 ];
 
+function buildServiceExecutionResult(body: {
+  nodeId?: string;
+  nodeData?: {
+    serviceId?: number;
+    outputKey?: string;
+  };
+  context?: Record<string, unknown>;
+  runtime?: {
+    stepIndex?: number;
+  };
+}) {
+  const serviceId = Number(body?.nodeData?.serviceId ?? 0);
+  const datasetId = String(body?.context?.datasetId ?? "ds-demo");
+
+  switch (serviceId) {
+    case 101:
+      return {
+        success: true,
+        output: {
+          datasetId,
+          cleanDatasetId: `${datasetId}-clean`,
+          count: 1280
+        },
+        patchContext: {
+          traceId: `${body?.nodeId ?? "service"}-${body?.runtime?.stepIndex ?? 0}`
+        },
+        metrics: {
+          durationMs: 120
+        }
+      };
+    case 208:
+      return {
+        success: true,
+        output: {
+          intersectionCount: 864,
+          secureResultId: `${datasetId}-tee`
+        },
+        patchContext: {
+          secureResultReady: true
+        },
+        metrics: {
+          durationMs: 280
+        }
+      };
+    case 306:
+      return {
+        success: true,
+        output: {
+          fallbackRule: "lightweight-rule",
+          approved: true
+        },
+        patchContext: {
+          usedFallbackRule: true
+        },
+        metrics: {
+          durationMs: 48
+        }
+      };
+    case 412:
+      return {
+        success: true,
+        output: {
+          score: 0.91,
+          riskLevel: "LOW"
+        },
+        patchContext: {
+          modelScoreReady: true
+        },
+        metrics: {
+          durationMs: 96
+        }
+      };
+    default:
+      return {
+        success: false,
+        error: {
+          code: "SERVICE_NOT_FOUND",
+          message: `未找到服务 ID ${serviceId || "unknown"} 的执行器`
+        }
+      };
+  }
+}
+
 export default defineFakeRoute([
   {
     url: "/api/playground/services",
@@ -65,6 +148,17 @@ export default defineFakeRoute([
           savedAt: new Date().toISOString(),
           payload: body
         }
+      };
+    }
+  },
+  {
+    url: "/api/workflow-playground/execute-node",
+    method: "post",
+    response: ({ body }) => {
+      return {
+        code: 0,
+        message: "ok",
+        data: buildServiceExecutionResult(body)
       };
     }
   }

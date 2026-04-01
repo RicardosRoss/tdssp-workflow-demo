@@ -11,7 +11,7 @@ defineProps<{
     name: string;
     summary: string;
     badge?: string;
-    dragKind: "template" | "service" | "dataset";
+    dragKind: "template" | "service" | "dataset" | "loop";
     serviceType?: string;
     graph?: {
       nodes?: unknown[];
@@ -27,7 +27,7 @@ defineEmits<{
       name: string;
       summary: string;
       badge?: string;
-      dragKind: "template" | "service" | "dataset";
+      dragKind: "template" | "service" | "dataset" | "loop";
       serviceType?: string;
       graph?: {
         nodes?: unknown[];
@@ -41,7 +41,7 @@ defineEmits<{
       name: string;
       summary: string;
       badge?: string;
-      dragKind: "template" | "service" | "dataset";
+      dragKind: "template" | "service" | "dataset" | "loop";
       serviceType?: string;
       graph?: {
         nodes?: unknown[];
@@ -124,9 +124,7 @@ defineEmits<{
   display: flex;
   flex-direction: column;
   gap: 16px;
-  justify-content: space-between;
-  height: 100%;
-  min-height: 70vh;
+  height: 70vh;
   padding: 22px 20px;
   background:
     radial-gradient(
@@ -200,10 +198,13 @@ defineEmits<{
 
 .service-list {
   display: flex;
+  flex: 1 1 0;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
   padding: 0;
   margin: 0;
+  overflow-y: auto;
   list-style: none;
 }
 

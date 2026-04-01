@@ -1,3 +1,5 @@
+import { isReactive, toRaw } from "vue";
+
 export type WorkflowExecutionStatus =
   | "idle"
   | "running"
@@ -93,6 +95,31 @@ export function createExecutionState(): WorkflowExecutionState {
     history: [],
     loopState: {}
   };
+}
+
+function toPlainCloneable<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(item => toPlainCloneable(item)) as T;
+  }
+
+  if (value && typeof value === "object") {
+    const rawValue = isReactive(value) ? toRaw(value) : value;
+
+    return Object.fromEntries(
+      Object.entries(rawValue).map(([key, nestedValue]) => [
+        key,
+        toPlainCloneable(nestedValue)
+      ])
+    ) as T;
+  }
+
+  return value;
+}
+
+export function snapshotExecutionContext(
+  context: Record<string, unknown>
+): Record<string, unknown> {
+  return toPlainCloneable(context);
 }
 
 export function findStartNodeId(nodes: WorkflowNodeLike[]) {

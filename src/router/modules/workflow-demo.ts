@@ -4,7 +4,7 @@ export default {
   path: "/workflow",
   name: "Workflow",
   component: Layout,
-  redirect: "/workflow/playground",
+  redirect: "/workflow/projects",
   meta: {
     icon: "ri/git-branch-line",
     title: "工作流",
@@ -12,11 +12,11 @@ export default {
   },
   children: [
     {
-      path: "/workflow/playground",
-      name: "WorkflowPlayground",
-      component: () => import("@/views/workflow/playground/index.vue"),
+      path: "/workflow/projects",
+      name: "WorkflowProjects",
+      component: () => import("@/views/workflow/project/index.vue"),
       meta: {
-        title: "流程演示"
+        title: "项目页"
       }
     },
     {
@@ -35,6 +35,16 @@ export default {
       meta: {
         title: "数据服务",
         icon: "ri/service-line"
+      }
+    },
+    {
+      path: "/workflow/playground",
+      name: "WorkflowPlayground",
+      component: () => import("@/views/workflow/playground/index.vue"),
+      meta: {
+        title: "流程演示",
+        showLink: false,
+        activePath: "/workflow/projects"
       }
     }
   ]
