@@ -14,6 +14,7 @@
 -->
 <script setup lang="ts">
 import { computed, markRaw, onMounted, ref } from "vue";
+import { ElMessageBox } from "element-plus";
 import type {
   Connection,
   EdgeMouseEvent,
@@ -90,6 +91,29 @@ function onResourceDragStart(item: {
   handleDragStart(item as any);
 }
 
+async function onTemplateClick(item: {
+  name: string;
+  dragKind: "template" | "service" | "dataset";
+  graph?: { nodes?: unknown[]; edges?: unknown[] };
+}) {
+  if (item.dragKind !== "template") return;
+
+  try {
+    await ElMessageBox.confirm(
+      `即将用「${item.name}」替换当前画布，当前工作流将被覆盖，是否继续？`,
+      "加载训练流模板",
+      {
+        confirmButtonText: "确认加载",
+        cancelButtonText: "取消",
+        type: "warning"
+      }
+    );
+    applyTemplate(item as Parameters<typeof applyTemplate>[0]);
+  } catch {
+    // 用户取消，无需操作
+  }
+}
+
 const resourceItems = computed(() => {
   if (activeResourceTab.value === "template") {
     return mockWorkflowTemplates.map(item => ({
@@ -131,6 +155,7 @@ const {
   handleDragStart,
   handleCanvasDragOver,
   handleCanvasDrop,
+  applyTemplate,
   // 节点编辑
   handleSaveNode,
   // 保存 / 恢复
@@ -177,6 +202,7 @@ function onEdgeClick(event: EdgeMouseEvent) {
       :items="resourceItems"
       @tab-change="handleResourceTabChange"
       @drag-start="onResourceDragStart"
+      @item-click="onTemplateClick"
       @save-to-local="handleSaveToLocal"
       @restore-from-local="handleRestoreFromLocal"
     />
