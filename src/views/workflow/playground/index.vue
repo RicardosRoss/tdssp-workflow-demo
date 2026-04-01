@@ -13,9 +13,12 @@
   - 样式只保留布局级和节点主题穿透样式
 -->
 <script setup lang="ts">
-import { markRaw } from "vue";
-import type { PlaygroundService } from "@/api/workflow-playground";
-import type { Connection, NodeMouseEvent } from "@vue-flow/core";
+import { computed, markRaw, onMounted, ref } from "vue";
+import type {
+  Connection,
+  EdgeMouseEvent,
+  NodeMouseEvent
+} from "@vue-flow/core";
 
 // vue-flow 样式（必须引入）
 import "@vue-flow/core/dist/style.css";
@@ -35,6 +38,11 @@ import WorkflowCanvas from "./components/WorkflowCanvas.vue";
 
 // 核心状态和行为
 import { useWorkflowPlayground } from "./composables/useWorkflowPlayground";
+import {
+  mockWorkflowTemplates,
+  workflowResourceTabs
+} from "./resource-library.mjs";
+import { useResourceLibrary } from "./composables/useResourceLibrary";
 
 // ---------------------------------------------------------------------------
 // 自定义节点类型映射
@@ -47,39 +55,56 @@ const nodeTypes = {
   service: markRaw(ServiceNode)
 };
 
-// ---------------------------------------------------------------------------
-// 服务库数据（后续可改为从 API 加载）
-// ---------------------------------------------------------------------------
-const services: PlaygroundService[] = [
-  {
-    id: 101,
-    name: "样本预处理",
-    serviceType: "COMPUTE",
-    summary: "拉取输入数据并做字段标准化",
-    category: "数据清洗"
-  },
-  {
-    id: 208,
-    name: "TEE 联邦求交",
-    serviceType: "PRIVACY",
-    summary: "调用隐私计算服务产出求交结果",
-    category: "隐私计算"
-  },
-  {
-    id: 306,
-    name: "规则兜底",
-    serviceType: "INTELLIGENCE",
-    summary: "数据规模不足时走轻量规则路径",
-    category: "智能服务"
-  },
-  {
-    id: 412,
-    name: "评分卡推理",
-    serviceType: "INTELLIGENCE",
-    summary: "调用评分推理接口产出风险等级",
-    category: "模型推理"
+const {
+  services: dynamicServices,
+  datasets: dynamicDatasets,
+  servicesLoading,
+  datasetsLoading,
+  fetchServices,
+  fetchDatasets
+} = useResourceLibrary();
+
+onMounted(() => {
+  fetchServices();
+  fetchDatasets();
+});
+
+const activeResourceTab = ref<"template" | "service" | "dataset">("template");
+
+function handleResourceTabChange(tab: string) {
+  activeResourceTab.value = tab as typeof activeResourceTab.value;
+}
+
+function onResourceDragStart(item: {
+  id: string | number;
+  name: string;
+  summary: string;
+  badge?: string;
+  dragKind: "template" | "service" | "dataset";
+  serviceType?: string;
+  graph?: {
+    nodes?: unknown[];
+    edges?: unknown[];
+  };
+}) {
+  handleDragStart(item as any);
+}
+
+const resourceItems = computed(() => {
+  if (activeResourceTab.value === "template") {
+    return mockWorkflowTemplates.map(item => ({
+      ...item,
+      dragKind: "template" as const,
+      badge: "训练流"
+    }));
   }
-];
+
+  if (activeResourceTab.value === "dataset") {
+    return dynamicDatasets.value;
+  }
+
+  return dynamicServices.value;
+});
 
 // ---------------------------------------------------------------------------
 // 从 composable 解构所有状态和方法
@@ -107,7 +132,15 @@ const {
   handleCanvasDragOver,
   handleCanvasDrop,
   // 节点编辑
-  handleSaveNode
+  handleSaveNode,
+  // 保存 / 恢复
+  handleSaveToLocal,
+  handleRestoreFromLocal,
+  // 删除
+  handleDeleteSelectedNode,
+  handleDeleteSelectedEdge,
+  // 边选中
+  handleEdgeClick
 } = useWorkflowPlayground();
 
 // ---------------------------------------------------------------------------
@@ -129,12 +162,24 @@ function onConnect(connection: Connection) {
 function onNodeClick(event: NodeMouseEvent) {
   handleNodeClick(event);
 }
+
+function onEdgeClick(event: EdgeMouseEvent) {
+  handleEdgeClick(event);
+}
 </script>
 
 <template>
   <div class="playground-page">
     <!-- 左侧：服务库 -->
-    <ServiceLibraryPanel :services="services" @drag-start="handleDragStart" />
+    <ServiceLibraryPanel
+      :tabs="workflowResourceTabs"
+      :active-tab="activeResourceTab"
+      :items="resourceItems"
+      @tab-change="handleResourceTabChange"
+      @drag-start="onResourceDragStart"
+      @save-to-local="handleSaveToLocal"
+      @restore-from-local="handleRestoreFromLocal"
+    />
 
     <!-- 中间：画布 -->
     <WorkflowCanvas
@@ -146,6 +191,7 @@ function onNodeClick(event: NodeMouseEvent) {
       @init="handleInit"
       @connect="onConnect"
       @node-click="onNodeClick"
+      @edge-click="onEdgeClick"
       @pane-click="handlePaneClick"
       @canvas-drop="onCanvasDrop"
       @canvas-drag-over="onCanvasDragOver"
@@ -158,13 +204,12 @@ function onNodeClick(event: NodeMouseEvent) {
       :selected-node-is-service="selectedNodeIsService"
       :can-save="canSaveNodeData"
       @save="handleSaveNode"
+      @delete="handleDeleteSelectedNode"
     />
   </div>
 </template>
 
 <style lang="scss" scoped>
-
-
 @media (width <= 1080px) {
   .playground-page {
     flex-direction: column;
