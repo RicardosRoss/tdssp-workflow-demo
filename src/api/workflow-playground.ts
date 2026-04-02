@@ -85,3 +85,53 @@ export const executeWorkflowNode = (data: ExecuteWorkflowNodePayload) => {
     { data }
   );
 };
+
+export type WorkflowTemplate = {
+  id: string;
+  name: string;
+  summary: string;
+  graph: {
+    nodes?: Array<Record<string, unknown>>;
+    edges?: Array<Record<string, unknown>>;
+  };
+};
+
+export type WorkflowTemplateListResult = {
+  code: number;
+  message: string;
+  data: WorkflowTemplate[];
+};
+
+export type LoopConfig = {
+  id: string;
+  name: string;
+  iterationType: string;
+  maxIterations: number;
+  summary: string;
+  expression: string;
+  category: string;
+  itemsPath?: string;
+  itemName?: string;
+};
+
+export type LoopConfigListResult = {
+  code: number;
+  message: string;
+  data: LoopConfig[];
+};
+
+/** 获取训练流模板列表 */
+export const getWorkflowTemplates = () => {
+  return http.request<WorkflowTemplateListResult>(
+    "get",
+    "/api/workflow-playground/templates"
+  );
+};
+
+/** 获取循环节点配置列表 */
+export const getLoopConfigs = () => {
+  return http.request<LoopConfigListResult>(
+    "get",
+    "/api/workflow-playground/loop-configs"
+  );
+};

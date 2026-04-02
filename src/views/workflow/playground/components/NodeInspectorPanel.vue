@@ -70,10 +70,7 @@ function formatJson(value: unknown) {
         <strong class="panel-card__title">
           {{ selectedNode.data?.label ?? selectedNode.id }}
         </strong>
-        <p class="panel-card__hint">
-          点击不同节点后，这里的上下文会切换。保存时只会更新当前节点的 `data`
-          配置，并同步清空当前运行态。
-        </p>
+        <p class="panel-card__hint" />
 
         <!-- 节点元信息（只读） -->
         <dl class="panel-card__meta">

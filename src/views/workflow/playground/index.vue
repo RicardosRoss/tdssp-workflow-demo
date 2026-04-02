@@ -40,11 +40,7 @@ import WorkflowCanvas from "./components/WorkflowCanvas.vue";
 
 // 核心状态和行为
 import { useWorkflowPlayground } from "./composables/useWorkflowPlayground";
-import {
-  mockLoops,
-  mockWorkflowTemplates,
-  workflowResourceTabs
-} from "./resource-library.mjs";
+import { workflowResourceTabs } from "./resource-library.mjs";
 import { useResourceLibrary } from "./composables/useResourceLibrary";
 
 // ---------------------------------------------------------------------------
@@ -62,15 +58,21 @@ const nodeTypes = {
 const {
   services: dynamicServices,
   datasets: dynamicDatasets,
+  templates: dynamicTemplates,
+  loops: dynamicLoops,
   servicesLoading,
   datasetsLoading,
   fetchServices,
-  fetchDatasets
+  fetchDatasets,
+  fetchTemplates,
+  fetchLoops
 } = useResourceLibrary();
 
 onMounted(() => {
   fetchServices();
   fetchDatasets();
+  fetchTemplates();
+  fetchLoops();
 });
 
 const activeResourceTab = ref<"template" | "service" | "dataset">("template");
@@ -119,7 +121,7 @@ async function onTemplateClick(item: {
 
 const resourceItems = computed(() => {
   if (activeResourceTab.value === "template") {
-    return mockWorkflowTemplates.map(item => ({
+    return dynamicTemplates.value.map(item => ({
       ...item,
       dragKind: "template" as const,
       badge: "训练流"
@@ -132,7 +134,7 @@ const resourceItems = computed(() => {
 
   return [
     ...dynamicServices.value,
-    ...mockLoops.map(item => ({
+    ...dynamicLoops.value.map(item => ({
       ...item,
       dragKind: "loop" as const,
       badge: item.category
@@ -215,70 +217,113 @@ function onEdgeClick(event: EdgeMouseEvent) {
 }
 
 const currentExecutionNodeLabel = computed(() => {
-  const currentNodeId = executionState.value.currentNodeId;
-  if (!currentNodeId) {
+  const ids = executionState.value.activeNodeIds;
+  if (!ids.length) {
     return "";
   }
 
-  const currentNode = nodes.value.find(node => node.id === currentNodeId);
-  return String(currentNode?.data?.label ?? currentNodeId);
+  return ids
+    .map(id => {
+      const node = nodes.value.find(n => n.id === id);
+      return String(node?.data?.label ?? id);
+    })
+    .join(", ");
 });
 </script>
 
 <template>
   <div class="playground-page">
-    <!-- 左侧：服务库 -->
-    <ServiceLibraryPanel
-      :tabs="workflowResourceTabs"
-      :active-tab="activeResourceTab"
-      :items="resourceItems"
-      @tab-change="handleResourceTabChange"
-      @drag-start="onResourceDragStart"
-      @item-click="onTemplateClick"
-      @save-to-local="handleSaveToLocal"
-      @restore-from-local="handleRestoreFromLocal"
-    />
+    <!-- 顶部：执行工具栏 -->
+    <div class="execution-toolbar">
+      <div class="execution-toolbar__info">
+        <span class="execution-toolbar__status">
+          状态 {{ executionState.status }}
+        </span>
+        <span class="execution-toolbar__divider">|</span>
+        <span>活跃节点 {{ currentExecutionNodeLabel || "未启动" }}</span>
+        <span class="execution-toolbar__divider">|</span>
+        <span>已执行 {{ executionStepCount }} 步</span>
+      </div>
+      <div class="execution-toolbar__actions">
+        <button
+          type="button"
+          :disabled="!canStartExecution"
+          @click="() => startExecution()"
+        >
+          启动
+        </button>
+        <button
+          type="button"
+          :disabled="!canStepExecution"
+          @click="stepExecution"
+        >
+          单步
+        </button>
+        <button
+          type="button"
+          :disabled="!canRunExecution"
+          @click="runExecution"
+        >
+          自动运行
+        </button>
+        <button
+          type="button"
+          :disabled="!canPauseExecution"
+          @click="pauseExecution"
+        >
+          暂停
+        </button>
+        <button
+          type="button"
+          :disabled="!canResetExecution"
+          @click="resetExecution"
+        >
+          重置
+        </button>
+      </div>
+    </div>
 
-    <!-- 中间：画布 -->
-    <WorkflowCanvas
-      v-model:nodes="nodes"
-      v-model:edges="edges"
-      :node-types="nodeTypes"
-      :node-color="nodeColor"
-      :node-stroke-color="nodeStrokeColor"
-      :execution-status="executionState.status"
-      :can-start="canStartExecution"
-      :can-step="canStepExecution"
-      :can-run="canRunExecution"
-      :can-pause="canPauseExecution"
-      :can-reset="canResetExecution"
-      :current-node-id="executionState.currentNodeId"
-      :current-node-label="currentExecutionNodeLabel"
-      :executed-steps="executionStepCount"
-      @init="handleInit"
-      @connect="onConnect"
-      @node-click="onNodeClick"
-      @edge-click="onEdgeClick"
-      @pane-click="handlePaneClick"
-      @canvas-drop="onCanvasDrop"
-      @canvas-drag-over="onCanvasDragOver"
-      @start-execution="startExecution"
-      @step-execution="stepExecution"
-      @run-execution="runExecution"
-      @pause-execution="pauseExecution"
-      @reset-execution="resetExecution"
-    />
+    <!-- 下方：三栏布局 -->
+    <div class="playground-content">
+      <!-- 左侧：服务库 -->
+      <ServiceLibraryPanel
+        :tabs="workflowResourceTabs"
+        :active-tab="activeResourceTab"
+        :items="resourceItems"
+        @tab-change="handleResourceTabChange"
+        @drag-start="onResourceDragStart"
+        @item-click="onTemplateClick"
+        @save-to-local="handleSaveToLocal"
+        @restore-from-local="handleRestoreFromLocal"
+      />
 
-    <!-- 右侧：节点详情和编辑 -->
-    <NodeInspectorPanel
-      v-model:draft-node-data="draftNodeData"
-      :selected-node="selectedNode"
-      :selected-node-is-service="selectedNodeIsService"
-      :can-save="canSaveNodeData"
-      :execution-context="executionState.context"
-      @save="handleSaveNode"
-      @delete="handleDeleteSelectedNode"
-    />
+      <!-- 中间：画布 -->
+      <WorkflowCanvas
+        v-model:nodes="nodes"
+        v-model:edges="edges"
+        :node-types="nodeTypes"
+        :node-color="nodeColor"
+        :node-stroke-color="nodeStrokeColor"
+        @init="handleInit"
+        @connect="onConnect"
+        @node-click="onNodeClick"
+        @edge-click="onEdgeClick"
+        @pane-click="handlePaneClick"
+        @canvas-drop="onCanvasDrop"
+        @canvas-drag-over="onCanvasDragOver"
+      />
+
+      <!-- 右侧：节点详情和编辑 -->
+      <NodeInspectorPanel
+        v-model:draft-node-data="draftNodeData"
+        :selected-node="selectedNode"
+        :selected-node-is-service="selectedNodeIsService"
+        :can-save="canSaveNodeData"
+        :execution-context="executionState.context"
+        @save="handleSaveNode"
+        @delete="handleDeleteSelectedNode"
+      />
+    </div>
   </div>
 </template>
 
@@ -287,9 +332,84 @@ const currentExecutionNodeLabel = computed(() => {
   .playground-page {
     flex-direction: column;
   }
+
+  .playground-content {
+    flex-direction: column;
+  }
 }
 
 .playground-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.execution-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgb(255 255 255 / 94%);
+  border: 1px solid #dbe7ff;
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgb(31 51 96 / 12%);
+  backdrop-filter: blur(12px);
+}
+
+.execution-toolbar__info {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  color: #4a5b7d;
+}
+
+.execution-toolbar__status {
+  font-weight: 700;
+  color: #22304b;
+}
+
+.execution-toolbar__divider {
+  color: #d0d9ef;
+}
+
+.execution-toolbar__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.execution-toolbar__actions button {
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #29406d;
+  cursor: pointer;
+  background: linear-gradient(180deg, #fff 0%, #edf3ff 100%);
+  border: 1px solid #c8d8ff;
+  border-radius: 10px;
+  transition:
+    border-color 0.2s ease,
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.execution-toolbar__actions button:hover:not(:disabled) {
+  border-color: #8fb1ff;
+  box-shadow: 0 8px 18px rgb(91 124 196 / 18%);
+  transform: translateY(-1px);
+}
+
+.execution-toolbar__actions button:disabled {
+  color: #92a0bd;
+  cursor: not-allowed;
+  background: #f4f7fc;
+  border-color: #dbe4f5;
+  box-shadow: none;
+}
+
+.playground-content {
   display: flex;
   gap: 12px;
   align-items: stretch;

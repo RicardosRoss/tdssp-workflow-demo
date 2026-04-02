@@ -21,7 +21,7 @@
 import { Background } from "@vue-flow/background";
 import { Controls } from "@vue-flow/controls";
 import { MiniMap } from "@vue-flow/minimap";
-import { Panel, PanelPosition, VueFlow } from "@vue-flow/core";
+import { PanelPosition, VueFlow } from "@vue-flow/core";
 import type {
   Connection,
   Edge,
@@ -39,15 +39,6 @@ defineProps<{
   nodeColor: (node: GraphNode) => string;
   /** MiniMap 节点描边色回调 */
   nodeStrokeColor: (node: GraphNode) => string;
-  executionStatus: string;
-  canStart: boolean;
-  canStep: boolean;
-  canRun: boolean;
-  canPause: boolean;
-  canReset: boolean;
-  currentNodeId: string | null;
-  currentNodeLabel: string;
-  executedSteps: number;
 }>();
 
 const nodes = defineModel<Node[]>("nodes", { required: true });
@@ -68,11 +59,6 @@ defineEmits<{
   canvasDrop: [event: DragEvent];
   /** 拖拽经过画布（需要 preventDefault） */
   canvasDragOver: [event: DragEvent];
-  startExecution: [];
-  stepExecution: [];
-  runExecution: [];
-  pauseExecution: [];
-  resetExecution: [];
 }>();
 </script>
 
@@ -94,52 +80,6 @@ defineEmits<{
       @edge-click="$emit('edgeClick', $event)"
       @pane-click="$emit('paneClick')"
     >
-      <Panel class="workflow-toolbar" :position="PanelPosition.TopRight">
-        <div class="workflow-toolbar__summary">
-          <span class="workflow-toolbar__status">
-            状态 {{ executionStatus }}
-          </span>
-          <span>当前 {{ currentNodeLabel || currentNodeId || "未启动" }}</span>
-          <span>已执行 {{ executedSteps }} 步</span>
-        </div>
-        <div class="workflow-toolbar__actions">
-          <button
-            type="button"
-            :disabled="!canStart"
-            @click="$emit('startExecution')"
-          >
-            启动
-          </button>
-          <button
-            type="button"
-            :disabled="!canStep"
-            @click="$emit('stepExecution')"
-          >
-            单步
-          </button>
-          <button
-            type="button"
-            :disabled="!canRun"
-            @click="$emit('runExecution')"
-          >
-            自动运行
-          </button>
-          <button
-            type="button"
-            :disabled="!canPause"
-            @click="$emit('pauseExecution')"
-          >
-            暂停
-          </button>
-          <button
-            type="button"
-            :disabled="!canReset"
-            @click="$emit('resetExecution')"
-          >
-            重置
-          </button>
-        </div>
-      </Panel>
       <Background pattern="dots" pattern-color="#d8e3ff" :gap="20" />
       <MiniMap
         :node-color="nodeColor"
@@ -162,65 +102,5 @@ defineEmits<{
   background: #f8fbff;
   border: 1px solid #dbe7ff;
   border-radius: 16px;
-}
-
-.workflow-toolbar {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 260px;
-  padding: 12px;
-  background: rgb(255 255 255 / 94%);
-  border: 1px solid #dbe7ff;
-  border-radius: 14px;
-  box-shadow: 0 16px 40px rgb(31 51 96 / 12%);
-  backdrop-filter: blur(12px);
-}
-
-.workflow-toolbar__summary {
-  display: grid;
-  gap: 6px;
-  font-size: 12px;
-  color: #4a5b7d;
-}
-
-.workflow-toolbar__status {
-  font-weight: 700;
-  color: #22304b;
-}
-
-.workflow-toolbar__actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.workflow-toolbar__actions button {
-  padding: 9px 12px;
-  font-size: 13px;
-  font-weight: 700;
-  color: #29406d;
-  cursor: pointer;
-  background: linear-gradient(180deg, #fff 0%, #edf3ff 100%);
-  border: 1px solid #c8d8ff;
-  border-radius: 10px;
-  transition:
-    border-color 0.2s ease,
-    transform 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.workflow-toolbar__actions button:hover:not(:disabled) {
-  border-color: #8fb1ff;
-  box-shadow: 0 8px 18px rgb(91 124 196 / 18%);
-  transform: translateY(-1px);
-}
-
-.workflow-toolbar__actions button:disabled {
-  color: #92a0bd;
-  cursor: not-allowed;
-  background: #f4f7fc;
-  border-color: #dbe4f5;
-  box-shadow: none;
 }
 </style>

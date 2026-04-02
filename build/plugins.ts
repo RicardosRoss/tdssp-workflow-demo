@@ -45,7 +45,7 @@ export function getPluginsList(
       logger: false,
       include: "mock",
       infixName: false,
-      enableProd: true
+      enableProd: process.env.VITE_ENABLE_MOCK === "true"
     }),
     // svg组件化支持
     svgLoader(),

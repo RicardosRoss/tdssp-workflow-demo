@@ -31,10 +31,11 @@ import {
   type NodePanelDraft
 } from "../node-panel";
 import {
+  advanceBarriers,
   advanceLoopState,
   applyServiceExecutionResult,
   createExecutionState,
-  findStartNodeId,
+  findStartNodeIds,
   markNodeExecutionError,
   resetExecutionState,
   resolveNextEdge,
@@ -203,7 +204,7 @@ export function useWorkflowPlayground() {
   const canStepExecution = computed(
     () =>
       !isStepping.value &&
-      !!executionState.value.currentNodeId &&
+      executionState.value.activeNodeIds.length > 0 &&
       executionState.value.status !== "success" &&
       executionState.value.status !== "error"
   );
@@ -216,7 +217,7 @@ export function useWorkflowPlayground() {
 
   const canResetExecution = computed(
     () =>
-      executionState.value.currentNodeId !== null ||
+      executionState.value.activeNodeIds.length > 0 ||
       executionState.value.history.length > 0 ||
       executionState.value.status !== "idle"
   );
@@ -242,7 +243,7 @@ export function useWorkflowPlayground() {
   }
 
   function syncNodeRuntimeData() {
-    const currentNodeId = executionState.value.currentNodeId;
+    const activeIds = executionState.value.activeNodeIds;
     const latestHistory = executionState.value.history.at(-1);
 
     nodes.value = nodes.value.map(node => {
@@ -254,7 +255,7 @@ export function useWorkflowPlayground() {
         data: {
           ...node.data,
           runStatus: runtimeState?.status ?? "idle",
-          isCurrent: node.id === currentNodeId,
+          isCurrent: activeIds.includes(node.id),
           lastRouteKey: isLastNode ? (latestHistory?.routeKey ?? "") : "",
           loopIndex: executionState.value.loopState[node.id]?.index ?? 0,
           lastInput: runtimeState?.input,
@@ -330,43 +331,112 @@ export function useWorkflowPlayground() {
     });
   }
 
-  function finalizeStep(
-    currentNodeId: string,
-    edge: Edge | null,
-    routeKey?: string,
-    nextContext?: Record<string, unknown>,
-    nextLoopState = executionState.value.loopState
-  ) {
-    const nextNodeId = edge?.target ?? null;
-    const nextNodeStates: typeof executionState.value.nodeStates = {
-      ...executionState.value.nodeStates,
-      [currentNodeId]: {
-        ...executionState.value.nodeStates[currentNodeId],
-        status: "success"
-      }
+  function toEngineEdge(edge: Edge | null) {
+    if (!edge) return null;
+    return {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle ?? null,
+      data: edge.data ?? undefined
     };
+  }
 
-    if (nextNodeId) {
-      nextNodeStates[nextNodeId] = {
-        ...nextNodeStates[nextNodeId],
+  function applyAdvanceBarriers(
+    completedNodeId: string,
+    currentBarriers: Record<string, number>,
+    selectedEdge: Edge | null
+  ): { barriers: Record<string, number>; newlyReady: string[] } {
+    const engineEdges = edges.value.map(e => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      sourceHandle: e.sourceHandle ?? null,
+      data: e.data ?? undefined
+    }));
+    const engineNodes = nodes.value.map(n => ({
+      id: n.id,
+      type: n.type ?? undefined,
+      data: n.data as Record<string, unknown> | undefined
+    }));
+    return advanceBarriers(
+      completedNodeId,
+      engineEdges,
+      currentBarriers,
+      engineNodes,
+      toEngineEdge(selectedEdge)
+    );
+  }
+
+  type StepCompletion = {
+    nodeId: string;
+    edge: Edge | null;
+    routeKey?: string;
+    nextContext?: Record<string, unknown>;
+    nextLoopState?: Record<string, { index: number }>;
+  };
+
+  function finalizeMultiStep(completions: StepCompletion[]) {
+    if (!completions.length) return;
+
+    let nextContext = { ...executionState.value.context };
+    let nextLoopState = { ...executionState.value.loopState };
+    let currentBarriers = { ...executionState.value.pendingBarriers };
+    const nextNodeStates: typeof executionState.value.nodeStates = {
+      ...executionState.value.nodeStates
+    };
+    const nextHistory = [...executionState.value.history];
+    const newlyReadySet = new Set<string>();
+
+    for (const completion of completions) {
+      nextNodeStates[completion.nodeId] = {
+        ...nextNodeStates[completion.nodeId],
+        status: "success"
+      };
+
+      nextHistory.push({
+        nodeId: completion.nodeId,
+        routeKey: completion.routeKey,
+        edgeId: completion.edge?.id
+      });
+
+      if (completion.nextContext) {
+        nextContext = { ...nextContext, ...completion.nextContext };
+      }
+      if (completion.nextLoopState) {
+        nextLoopState = { ...nextLoopState, ...completion.nextLoopState };
+      }
+
+      if (completion.edge?.target) {
+        const { barriers, newlyReady } = applyAdvanceBarriers(
+          completion.nodeId,
+          currentBarriers,
+          completion.edge
+        );
+        currentBarriers = barriers;
+        for (const id of newlyReady) {
+          newlyReadySet.add(id);
+        }
+      }
+    }
+
+    const activeNodeIds = [...newlyReadySet];
+    for (const id of activeNodeIds) {
+      nextNodeStates[id] = {
+        ...nextNodeStates[id],
         status: "ready"
       };
     }
 
     commitExecutionState({
       ...executionState.value,
-      status: nextNodeId ? "running" : "success",
-      currentNodeId: nextNodeId,
-      context: nextContext ?? executionState.value.context,
+      status: activeNodeIds.length > 0 ? "running" : "success",
+      currentNodeId: activeNodeIds[0] ?? null,
+      activeNodeIds,
+      pendingBarriers: currentBarriers,
+      context: nextContext,
       loopState: nextLoopState,
-      history: [
-        ...executionState.value.history,
-        {
-          nodeId: currentNodeId,
-          routeKey,
-          edgeId: edge?.id
-        }
-      ],
+      history: nextHistory,
       nodeStates: nextNodeStates
     });
   }
@@ -588,12 +658,24 @@ export function useWorkflowPlayground() {
       return;
     }
 
+    const engineEdges = edges.value.map(e => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      sourceHandle: e.sourceHandle ?? null,
+      data: e.data ?? undefined
+    }));
+
     const nextState = startExecutionState({
       nodes: nodes.value,
+      edges: engineEdges,
       initialContext
     });
 
-    if (!nextState.currentNodeId || !findStartNodeId(nodes.value)) {
+    if (
+      nextState.activeNodeIds.length === 0 ||
+      findStartNodeIds(nodes.value).length === 0
+    ) {
       ElMessage.error("流程图缺少开始节点");
       return;
     }
@@ -607,135 +689,188 @@ export function useWorkflowPlayground() {
       return;
     }
 
-    if (!executionState.value.currentNodeId) {
-      return;
-    }
-
-    const currentNode = getNodeById(executionState.value.currentNodeId);
-    if (!currentNode) {
+    if (executionState.value.activeNodeIds.length === 0) {
       return;
     }
 
     isStepping.value = true;
     try {
-      markNodeRunning(currentNode.id);
-
-      if (currentNode.type === "end") {
-        finalizeStep(currentNode.id, null);
-        return;
+      const activeIds = [...executionState.value.activeNodeIds];
+      for (const nodeId of activeIds) {
+        markNodeRunning(nodeId);
       }
 
-      if (currentNode.type === "start") {
-        const edge = resolveNextEdge({
-          currentNode,
-          edges: edges.value
-        });
-        finalizeStep(currentNode.id, edge as Edge | null, "default");
-        return;
-      }
+      const syncCompletions: StepCompletion[] = [];
+      const asyncNodes: Node[] = [];
 
-      if (currentNode.type === "condition") {
-        const routeKey = evaluateConditionExpression(
-          String(currentNode.data?.expression ?? "")
-        )
-          ? "yes"
-          : "no";
-        const edge = resolveNextEdge({
-          currentNode,
-          edges: edges.value,
-          routeKey
-        });
-        finalizeStep(currentNode.id, edge as Edge | null, routeKey);
-        return;
-      }
+      for (const nodeId of activeIds) {
+        const node = getNodeById(nodeId);
+        if (!node) continue;
 
-      if (currentNode.type === "loop") {
-        const loopResult = advanceLoopState({
-          nodeId: currentNode.id,
-          nodeData: (currentNode.data ?? {}) as Record<string, unknown>,
-          context: executionState.value.context,
-          loopState: executionState.value.loopState
-        });
-
-        let nextContext = executionState.value.context;
-        if (loopResult.routeKey === "loop-body") {
-          const itemsPath = String(currentNode.data?.itemsPath ?? "");
-          const itemName = String(currentNode.data?.itemName ?? "");
-          const items = Array.isArray(readPath(itemsPath, nextContext))
-            ? (readPath(itemsPath, nextContext) as unknown[])
-            : [];
-          const nextIndex =
-            (loopResult.loopState[currentNode.id]?.index ?? 1) - 1;
-          if (itemName) {
-            nextContext = {
-              ...nextContext,
-              [itemName]: items[nextIndex]
-            };
-          }
+        if (node.type === "end") {
+          syncCompletions.push({
+            nodeId: node.id,
+            edge: null
+          });
+          continue;
         }
 
-        const edge = resolveNextEdge({
-          currentNode,
-          edges: edges.value,
-          routeKey: loopResult.routeKey
-        });
-        finalizeStep(
-          currentNode.id,
-          edge as Edge | null,
-          loopResult.routeKey,
-          nextContext,
-          loopResult.loopState
-        );
-        return;
+        if (node.type === "start") {
+          const edge = resolveNextEdge({
+            currentNode: node,
+            edges: edges.value
+          });
+          syncCompletions.push({
+            nodeId: node.id,
+            edge: edge as Edge | null,
+            routeKey: "default"
+          });
+          continue;
+        }
+
+        if (node.type === "condition") {
+          const routeKey = evaluateConditionExpression(
+            String(node.data?.expression ?? "")
+          )
+            ? "yes"
+            : "no";
+          const edge = resolveNextEdge({
+            currentNode: node,
+            edges: edges.value,
+            routeKey
+          });
+          syncCompletions.push({
+            nodeId: node.id,
+            edge: edge as Edge | null,
+            routeKey
+          });
+          continue;
+        }
+
+        if (node.type === "loop") {
+          const loopResult = advanceLoopState({
+            nodeId: node.id,
+            nodeData: (node.data ?? {}) as Record<string, unknown>,
+            context: executionState.value.context,
+            loopState: executionState.value.loopState
+          });
+
+          let nextContext: Record<string, unknown> | undefined;
+          if (loopResult.routeKey === "loop-body") {
+            const itemsPath = String(node.data?.itemsPath ?? "");
+            const itemName = String(node.data?.itemName ?? "");
+            const items = Array.isArray(
+              readPath(itemsPath, executionState.value.context)
+            )
+              ? (readPath(itemsPath, executionState.value.context) as unknown[])
+              : [];
+            const nextIndex = (loopResult.loopState[node.id]?.index ?? 1) - 1;
+            if (itemName) {
+              nextContext = {
+                ...executionState.value.context,
+                [itemName]: items[nextIndex]
+              };
+            }
+          }
+
+          const edge = resolveNextEdge({
+            currentNode: node,
+            edges: edges.value,
+            routeKey: loopResult.routeKey
+          });
+          syncCompletions.push({
+            nodeId: node.id,
+            edge: edge as Edge | null,
+            routeKey: loopResult.routeKey,
+            nextContext,
+            nextLoopState: loopResult.loopState
+          });
+          continue;
+        }
+
+        if (node.type === "service") {
+          asyncNodes.push(node);
+        }
       }
 
-      if (currentNode.type === "service") {
-        const result = await executeWorkflowNode({
-          nodeId: currentNode.id,
-          nodeType: currentNode.type,
-          nodeData: (currentNode.data ?? {}) as Record<string, unknown>,
-          context: executionState.value.context,
-          runtime: {
-            stepIndex: executionState.value.history.length,
-            loopState: executionState.value.loopState
-          }
-        });
+      if (asyncNodes.length > 0) {
+        const results = await Promise.allSettled(
+          asyncNodes.map(node =>
+            executeWorkflowNode({
+              nodeId: node.id,
+              nodeType: node.type ?? "service",
+              nodeData: (node.data ?? {}) as Record<string, unknown>,
+              context: executionState.value.context,
+              runtime: {
+                stepIndex: executionState.value.history.length,
+                loopState: executionState.value.loopState
+              }
+            })
+          )
+        );
 
-        if (!result.data.success) {
+        for (let i = 0; i < results.length; i++) {
+          const node = asyncNodes[i];
+          const result = results[i];
+
+          if (result.status === "rejected") {
+            commitExecutionState(
+              markNodeExecutionError(executionState.value, {
+                nodeId: node.id,
+                message:
+                  result.reason instanceof Error
+                    ? result.reason.message
+                    : "服务执行失败"
+              })
+            );
+            isAutoRunning.value = false;
+            return;
+          }
+
+          if (!result.value.data.success) {
+            commitExecutionState(
+              markNodeExecutionError(executionState.value, {
+                nodeId: node.id,
+                message: result.value.data.error?.message ?? "服务执行失败"
+              })
+            );
+            isAutoRunning.value = false;
+            return;
+          }
+
           commitExecutionState(
-            markNodeExecutionError(executionState.value, {
-              nodeId: currentNode.id,
-              message: result.data.error?.message ?? "服务执行失败"
+            applyServiceExecutionResult(executionState.value, {
+              nodeId: node.id,
+              nodeData: (node.data ?? {}) as Record<string, unknown>,
+              output: result.value.data.output,
+              patchContext: result.value.data.patchContext,
+              metrics: result.value.data.metrics
             })
           );
-          isAutoRunning.value = false;
-          return;
-        }
 
+          const edge = resolveNextEdge({
+            currentNode: node,
+            edges: edges.value
+          });
+          syncCompletions.push({
+            nodeId: node.id,
+            edge: edge as Edge | null,
+            routeKey: "default"
+          });
+        }
+      }
+
+      finalizeMultiStep(syncCompletions);
+    } catch (error) {
+      const failedNodeId = executionState.value.activeNodeIds[0];
+      if (failedNodeId) {
         commitExecutionState(
-          applyServiceExecutionResult(executionState.value, {
-            nodeId: currentNode.id,
-            nodeData: (currentNode.data ?? {}) as Record<string, unknown>,
-            output: result.data.output,
-            patchContext: result.data.patchContext,
-            metrics: result.data.metrics
+          markNodeExecutionError(executionState.value, {
+            nodeId: failedNodeId,
+            message: error instanceof Error ? error.message : "服务执行失败"
           })
         );
-
-        const edge = resolveNextEdge({
-          currentNode,
-          edges: edges.value,
-          routeKey: "default"
-        });
-        finalizeStep(currentNode.id, edge as Edge | null, "default");
       }
-    } catch (error) {
-      commitExecutionState(
-        markNodeExecutionError(executionState.value, {
-          nodeId: currentNode.id,
-          message: error instanceof Error ? error.message : "服务执行失败"
-        })
-      );
       isAutoRunning.value = false;
     } finally {
       isStepping.value = false;
@@ -747,7 +882,7 @@ export function useWorkflowPlayground() {
       return;
     }
 
-    if (!executionState.value.currentNodeId) {
+    if (executionState.value.activeNodeIds.length === 0) {
       await startExecution();
     } else if (executionState.value.status === "paused") {
       commitExecutionState({
@@ -756,7 +891,7 @@ export function useWorkflowPlayground() {
       });
     }
 
-    if (!executionState.value.currentNodeId) {
+    if (executionState.value.activeNodeIds.length === 0) {
       return;
     }
 
@@ -764,7 +899,7 @@ export function useWorkflowPlayground() {
 
     while (
       isAutoRunning.value &&
-      executionState.value.currentNodeId &&
+      executionState.value.activeNodeIds.length > 0 &&
       executionState.value.status !== "success" &&
       executionState.value.status !== "error"
     ) {

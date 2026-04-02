@@ -54,7 +54,11 @@ export function getProjectComputeModeLabel(computeMode) {
 
   const normalized = computeMode.toUpperCase();
 
-  if (normalized === "TEE" || normalized === "HUB" || computeMode === "枢纽模式") {
+  if (
+    normalized === "TEE" ||
+    normalized === "HUB" ||
+    computeMode === "枢纽模式"
+  ) {
     return "枢纽模式";
   }
 
@@ -89,7 +93,8 @@ export function getWorkflowWorkspaceRedirect({
 
   if (
     mode === "workspace" &&
-    (currentProjectId !== selectedProjectId || currentSection !== selectedSection)
+    (currentProjectId !== selectedProjectId ||
+      currentSection !== selectedSection)
   ) {
     return {
       path: "/workflow/projects",

@@ -17,6 +17,12 @@ import {
   getDataResourceList,
   type DataSourceResponse
 } from "@/api/data-resource";
+import {
+  getWorkflowTemplates,
+  getLoopConfigs,
+  type WorkflowTemplate,
+  type LoopConfig
+} from "@/api/workflow-playground";
 
 /** ServiceLibraryPanel 所需的 item 类型 */
 export interface ResourceLibraryItem {
@@ -62,8 +68,12 @@ export function useResourceLibrary() {
   // ---- 状态 ----
   const services = ref<ResourceLibraryItem[]>([]);
   const datasets = ref<ResourceLibraryItem[]>([]);
+  const templates = ref<WorkflowTemplate[]>([]);
+  const loops = ref<LoopConfig[]>([]);
   const servicesLoading = ref(false);
   const datasetsLoading = ref(false);
+  const templatesLoading = ref(false);
+  const loopsLoading = ref(false);
 
   /** 获取活跃数据服务列表（组件库） */
   async function fetchServices() {
@@ -99,13 +109,47 @@ export function useResourceLibrary() {
     }
   }
 
+  /** 获取训练流模板列表 */
+  async function fetchTemplates() {
+    templatesLoading.value = true;
+    try {
+      const res = await getWorkflowTemplates();
+      templates.value = res.data ?? [];
+    } catch (e) {
+      console.error("获取训练流模板失败:", e);
+      templates.value = [];
+    } finally {
+      templatesLoading.value = false;
+    }
+  }
+
+  /** 获取循环节点配置列表 */
+  async function fetchLoops() {
+    loopsLoading.value = true;
+    try {
+      const res = await getLoopConfigs();
+      loops.value = res.data ?? [];
+    } catch (e) {
+      console.error("获取循环配置失败:", e);
+      loops.value = [];
+    } finally {
+      loopsLoading.value = false;
+    }
+  }
+
   // ---- 返回 ----
   return {
     services,
     datasets,
+    templates,
+    loops,
     servicesLoading,
     datasetsLoading,
+    templatesLoading,
+    loopsLoading,
     fetchServices,
-    fetchDatasets
+    fetchDatasets,
+    fetchTemplates,
+    fetchLoops
   };
 }

@@ -34,6 +34,8 @@ export type WorkflowEdgeLike = {
 export interface WorkflowExecutionState {
   status: WorkflowExecutionStatus;
   currentNodeId: string | null;
+  activeNodeIds: string[];
+  pendingBarriers: Record<string, number>;
   context: Record<string, unknown>;
   outputsByNodeId: Record<string, unknown>;
   nodeStates: Record<
@@ -77,6 +79,7 @@ type AdvanceLoopStateArgs = {
 
 type StartExecutionStateArgs = {
   nodes: WorkflowNodeLike[];
+  edges?: WorkflowEdgeLike[];
   initialContext?: Record<string, unknown>;
 };
 
@@ -89,6 +92,8 @@ export function createExecutionState(): WorkflowExecutionState {
   return {
     status: "idle",
     currentNodeId: null,
+    activeNodeIds: [],
+    pendingBarriers: {},
     context: {},
     outputsByNodeId: {},
     nodeStates: {},
@@ -124,6 +129,63 @@ export function snapshotExecutionContext(
 
 export function findStartNodeId(nodes: WorkflowNodeLike[]) {
   return nodes.find(node => node.type === "start")?.id ?? null;
+}
+
+export function findStartNodeIds(nodes: WorkflowNodeLike[]): string[] {
+  return nodes.filter(node => node.type === "start").map(node => node.id);
+}
+
+export function buildBarrierMap(
+  nodes: WorkflowNodeLike[],
+  edges: WorkflowEdgeLike[]
+): Record<string, number> {
+  const sourcesByTarget: Record<string, Set<string>> = {};
+  for (const edge of edges) {
+    if (!sourcesByTarget[edge.target]) {
+      sourcesByTarget[edge.target] = new Set();
+    }
+    sourcesByTarget[edge.target].add(edge.source);
+  }
+  const barriers: Record<string, number> = {};
+  for (const [target, sources] of Object.entries(sourcesByTarget)) {
+    if (sources.size > 1) {
+      barriers[target] = sources.size;
+    }
+  }
+  return barriers;
+}
+
+export function advanceBarriers(
+  completedNodeId: string,
+  edges: WorkflowEdgeLike[],
+  currentBarriers: Record<string, number>,
+  nodes: WorkflowNodeLike[],
+  selectedEdge: WorkflowEdgeLike | null = null
+): { barriers: Record<string, number>; newlyReady: string[] } {
+  const nextBarriers = { ...currentBarriers };
+  const newlyReady: string[] = [];
+
+  const edgesToProcess = selectedEdge
+    ? [selectedEdge]
+    : edges.filter(edge => edge.source === completedNodeId);
+
+  for (const edge of edgesToProcess) {
+    const targetId = edge.target;
+    if (targetId in nextBarriers) {
+      nextBarriers[targetId] -= 1;
+      if (nextBarriers[targetId] <= 0) {
+        delete nextBarriers[targetId];
+        newlyReady.push(targetId);
+      }
+    } else {
+      const targetNode = nodes.find(n => n.id === targetId);
+      if (targetNode && targetNode.type !== "start") {
+        newlyReady.push(targetId);
+      }
+    }
+  }
+
+  return { barriers: nextBarriers, newlyReady };
 }
 
 export function resolveNextEdge({
@@ -190,25 +252,37 @@ export function applyServiceExecutionResult(
 
 export function startExecutionState({
   nodes,
+  edges = [],
   initialContext = {}
 }: StartExecutionStateArgs): WorkflowExecutionState {
-  const startNodeId = findStartNodeId(nodes);
+  const startNodeIds = findStartNodeIds(nodes);
   const state = createExecutionState();
 
-  if (!startNodeId) {
+  if (!startNodeIds.length) {
     return state;
   }
+
+  const nodeStates: Record<string, { status: NodeRunStatus }> = {};
+  const context: Record<string, unknown> = { ...initialContext };
+
+  for (const nodeId of startNodeIds) {
+    nodeStates[nodeId] = { status: "ready" };
+    const startNode = nodes.find(n => n.id === nodeId);
+    if (startNode?.data?.datasetId) {
+      context[`__start_${nodeId}`] = { datasetId: startNode.data.datasetId };
+    }
+  }
+
+  const barriers = buildBarrierMap(nodes, edges);
 
   return {
     ...state,
     status: "running",
-    currentNodeId: startNodeId,
-    context: { ...initialContext },
-    nodeStates: {
-      [startNodeId]: {
-        status: "ready"
-      }
-    }
+    currentNodeId: startNodeIds[0],
+    activeNodeIds: [...startNodeIds],
+    pendingBarriers: { ...barriers },
+    context,
+    nodeStates
   };
 }
 
@@ -238,6 +312,8 @@ export function resetExecutionState(
     ...state,
     status: "idle",
     currentNodeId: null,
+    activeNodeIds: [],
+    pendingBarriers: {},
     history: []
   };
 }
