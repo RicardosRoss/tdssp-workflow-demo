@@ -70,6 +70,8 @@ const wrapperEnv = (envConf: Recordable): ViteEnv => {
     ret[envName] = realName;
     if (typeof realName === "string") {
       process.env[envName] = realName;
+    } else if (typeof realName === "boolean") {
+      process.env[envName] = String(realName);
     } else if (typeof realName === "object") {
       process.env[envName] = JSON.stringify(realName);
     }
