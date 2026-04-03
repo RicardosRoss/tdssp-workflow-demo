@@ -1,3 +1,8 @@
+<!--
+  EndNode — 工作流出口节点
+  表示流程的终点，只有左侧入口 Handle，无出口。
+  到达此节点表示工作流执行完成。
+-->
 <script setup lang="ts">
 import { Handle, Position, type NodeProps } from "@vue-flow/core";
 
@@ -18,6 +23,7 @@ defineProps<NodeProps>();
     <div class="wf-node__chips">
       <span>{{ data.runStatus ?? "idle" }}</span>
     </div>
+    <!-- 只有左侧入口（target），流程到这里结束 -->
     <Handle id="in" type="target" :position="Position.Left" />
   </div>
 </template>
