@@ -25,26 +25,51 @@ import {
 
 defineOptions({ name: "WorkflowProjectPage" });
 
+/** 工作区中可切换的子页面类型（目前只有 playground） */
 type WorkflowProjectSection = "playground";
 
 const route = useRoute();
 const router = useRouter();
 
+// ---------------------------------------------------------------------------
+// 基础状态
+// ---------------------------------------------------------------------------
+
+/** 项目列表是否正在加载中 */
 const loading = ref(false);
+/** 创建/编辑表单是否正在提交中 */
 const submitting = ref(false);
+/** 新建/编辑项目的对话框是否可见 */
 const createDialogVisible = ref(false);
+/** Element Plus 表单实例引用，用于触发表单验证 */
 const projectFormRef = ref<FormInstance>();
+/** 从后端获取的项目列表数据 */
 const projects = ref<ProjectVO[]>([]);
+/** 当前正在编辑的项目 ID（空字符串表示新建模式） */
 const editingProjectId = ref("");
+/** 项目列表是否已加载完成（用于控制 watch 中的重定向逻辑，避免加载中闪烁） */
 const hasLoadedProjects = ref(false);
 
+// ---------------------------------------------------------------------------
+// 筛选器
+// ---------------------------------------------------------------------------
+
+/** 项目列表的搜索和过滤条件 */
 const filters = reactive({
+  /** 按项目名称模糊搜索 */
   keyword: "",
+  /** 按计算模式精确过滤 */
   computeMode: ""
 });
 
+// ---------------------------------------------------------------------------
+// 表单相关
+// ---------------------------------------------------------------------------
+
+/** 新建/编辑项目的表单数据 */
 const projectForm = reactive<
   CreateProjectRequest & {
+    /** 选中的训练流模板 ID（目前只有 blank） */
     templateId: string;
   }
 >({
@@ -54,6 +79,7 @@ const projectForm = reactive<
   templateId: "federated-circle"
 });
 
+/** 表单校验规则 */
 const projectFormRules: FormRules<typeof projectForm> = {
   name: [
     { required: true, message: "请输入项目名称", trigger: "blur" },
@@ -66,6 +92,7 @@ const projectFormRules: FormRules<typeof projectForm> = {
   ]
 };
 
+/** 可选的训练流模板列表（目前只提供空白模板） */
 const templateOptions = [
   {
     id: "blank",
@@ -75,6 +102,11 @@ const templateOptions = [
   }
 ] as const;
 
+// ---------------------------------------------------------------------------
+// 计算属性
+// ---------------------------------------------------------------------------
+
+/** 根据筛选条件过滤后的项目列表 */
 const filteredProjects = computed(() => {
   return projects.value.filter(project => {
     const name = project.projectName ?? "";
@@ -88,6 +120,13 @@ const filteredProjects = computed(() => {
   });
 });
 
+/**
+ * 工作区状态：根据 URL query 参数和项目列表决定当前应该显示"列表模式"还是"工作区模式"
+ *
+ * 核心切换逻辑：
+ * - URL 有 projectId → workspace 模式（显示训练流画布）
+ * - URL 没有 projectId → list 模式（显示项目卡片网格）
+ */
 const workspaceState = computed(() =>
   resolveWorkflowWorkspaceState({
     projects: projects.value,
@@ -96,10 +135,12 @@ const workspaceState = computed(() =>
   })
 );
 
+/** 当前是否处于工作区模式（已选中某个项目进入编辑） */
 const isWorkspaceMode = computed(
   () => workspaceState.value.mode === "workspace"
 );
 
+/** 当前选中的完整项目对象（从 projects 数组中按 ID 查找） */
 const selectedProject = computed(() => {
   return (
     projects.value.find(
@@ -108,22 +149,35 @@ const selectedProject = computed(() => {
   );
 });
 
+/** 工作区中当前激活的子页面组件（目前固定为 Playground） */
 const currentSectionComponent = computed<Component>(
   () => WorkflowPlaygroundPage
 );
 
+// ---------------------------------------------------------------------------
+// 辅助函数：获取项目卡片的统计数字
+// ---------------------------------------------------------------------------
+
+/** 获取项目参与的节点数量 */
 function getProjectNodeCount(project: ProjectVO) {
   return project.nodes?.length ?? 0;
 }
 
+/** 获取项目的训练流数量（当前固定返回 0，待后续实现） */
 function getProjectWorkflowCount(_project: ProjectVO) {
   return 0;
 }
 
+/** 获取项目的任务（Job）数量 */
 function getProjectJobCount(project: ProjectVO) {
   return project.partyVoteInfos?.length ?? 0;
 }
 
+// ---------------------------------------------------------------------------
+// 数据获取
+// ---------------------------------------------------------------------------
+
+/** 从后端获取项目列表 */
 async function fetchProjects() {
   hasLoadedProjects.value = false;
   loading.value = true;
@@ -140,12 +194,18 @@ async function fetchProjects() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 对话框操作
+// ---------------------------------------------------------------------------
+
+/** 打开"新建项目"对话框 */
 function openCreateDialog() {
   editingProjectId.value = "";
   resetProjectForm();
   createDialogVisible.value = true;
 }
 
+/** 打开"编辑项目"对话框，将项目当前数据填入表单 */
 function openEditDialog(project: ProjectVO) {
   editingProjectId.value = project.projectId ?? "";
   projectForm.name = project.projectName ?? "";
@@ -155,6 +215,7 @@ function openEditDialog(project: ProjectVO) {
   createDialogVisible.value = true;
 }
 
+/** 重置表单到初始状态 */
 function resetProjectForm() {
   editingProjectId.value = "";
   projectForm.name = "";
@@ -164,11 +225,17 @@ function resetProjectForm() {
   projectFormRef.value?.clearValidate();
 }
 
+/** 关闭对话框并重置表单 */
 function closeCreateDialog() {
   createDialogVisible.value = false;
   resetProjectForm();
 }
 
+// ---------------------------------------------------------------------------
+// 提交操作（创建 / 更新 / 删除）
+// ---------------------------------------------------------------------------
+
+/** 提交创建或更新项目（共用同一个对话框） */
 async function submitCreateProject() {
   await projectFormRef.value?.validate();
 
@@ -178,6 +245,7 @@ async function submitCreateProject() {
     let nextProjectId = editingProjectId.value;
 
     if (editingProjectId.value) {
+      // 编辑模式：调用更新接口
       await updateProject({
         projectId: editingProjectId.value,
         name: projectForm.name,
@@ -185,6 +253,7 @@ async function submitCreateProject() {
       } satisfies UpdateProjectRequest);
       ElMessage.success("项目更新成功");
     } else {
+      // 新建模式：调用创建接口
       const createdProject = await createProject({
         name: projectForm.name,
         description: projectForm.description,
@@ -192,6 +261,7 @@ async function submitCreateProject() {
       } satisfies CreateProjectRequest);
 
       ElMessage.success("项目创建成功");
+      // 创建后自动跳转到该项目的工作区
       nextProjectId =
         createdProject?.projectId ||
         projects.value.find(
@@ -215,12 +285,13 @@ async function submitCreateProject() {
   }
 }
 
+/** 删除项目（带二次确认弹窗） */
 async function handleDeleteProject(project: ProjectVO) {
   if (!project.projectId) return;
 
   try {
     await ElMessageBox.confirm(
-      `确认删除项目“${project.projectName || "未命名项目"}”吗？`,
+      `确认删除项目"${project.projectName || "未命名项目"}"吗？`,
       "删除项目",
       {
         type: "warning",
@@ -232,6 +303,7 @@ async function handleDeleteProject(project: ProjectVO) {
     await deleteProject({ projectId: project.projectId });
     ElMessage.success("项目删除成功");
 
+    // 如果删除的是当前打开的项目，自动返回列表
     if (workspaceState.value.selectedProjectId === project.projectId) {
       backToProjectList();
     }
@@ -244,6 +316,14 @@ async function handleDeleteProject(project: ProjectVO) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 路由跳转
+// ---------------------------------------------------------------------------
+
+/**
+ * 打开指定项目的工作区
+ * 通过添加 query 参数切换到 workspace 模式，仍然在同一路由上
+ */
 function openProject(
   projectId: string,
   section: WorkflowProjectSection = "playground"
@@ -257,10 +337,19 @@ function openProject(
   });
 }
 
+/** 返回项目列表（清除 query 参数，回到 list 模式） */
 function backToProjectList() {
   router.push({ path: "/workflow/projects" });
 }
 
+// ---------------------------------------------------------------------------
+// 路由同步 Watch
+// ---------------------------------------------------------------------------
+
+/**
+ * 监听项目列表和 URL query 参数变化，自动修正路由
+ * 确保浏览器地址栏始终与实际状态一致（兜底处理边界情况）
+ */
 watch(
   () => [projects.value, route.query.projectId, route.query.section] as const,
   () => {
@@ -284,6 +373,7 @@ watch(
   { immediate: true }
 );
 
+/** 页面挂载时加载项目列表 */
 onMounted(() => {
   fetchProjects();
 });

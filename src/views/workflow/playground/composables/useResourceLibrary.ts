@@ -66,10 +66,16 @@ const MAX_RESOURCE_PAGE_SIZE = 200;
 
 export function useResourceLibrary() {
   // ---- 状态 ----
+
+  /** 组件库列表（数据服务映射后的统一格式） */
   const services = ref<ResourceLibraryItem[]>([]);
+  /** 数据集列表（数据资源映射后的统一格式） */
   const datasets = ref<ResourceLibraryItem[]>([]);
+  /** 训练流模板列表 */
   const templates = ref<WorkflowTemplate[]>([]);
+  /** 循环节点配置列表 */
   const loops = ref<LoopConfig[]>([]);
+  /** 各类资源是否正在加载中 */
   const servicesLoading = ref(false);
   const datasetsLoading = ref(false);
   const templatesLoading = ref(false);

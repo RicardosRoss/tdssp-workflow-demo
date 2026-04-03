@@ -1,18 +1,43 @@
+<!--
+  ServiceLibraryPanel — 左侧资源库面板
+
+  职责：
+  - 提供训练流/组件库/数据集三个标签页切换
+  - 展示各类资源列表，支持拖拽到画布生成节点
+  - 训练流模板支持点击加载（替换当前画布）
+  - 提供保存/恢复工作流到本地的快捷操作
+
+  通信方式：
+  - props：
+    - tabs：标签页配置列表
+    - activeTab：当前激活的标签页 key
+    - items：当前标签页下的资源列表
+  - emits：
+    - dragStart：拖拽开始（传给画布的 drop 处理）
+    - itemClick：点击资源项（目前仅训练流模板支持）
+    - tabChange：切换标签页
+    - saveToLocal / restoreFromLocal：本地存储操作
+-->
 <script setup lang="ts">
 defineProps<{
+  /** 标签页配置（训练流/组件库/数据集） */
   tabs: Array<{
     key: string;
     label: string;
     description: string;
   }>;
+  /** 当前激活的标签页 key */
   activeTab: string;
+  /** 当前标签页下的资源列表 */
   items: Array<{
     id: string | number;
     name: string;
     summary: string;
     badge?: string;
+    /** 拖拽类型：template 替换画布，service/dataset/loop 生成节点 */
     dragKind: "template" | "service" | "dataset" | "loop";
     serviceType?: string;
+    /** template 类型的流程图数据 */
     graph?: {
       nodes?: unknown[];
       edges?: unknown[];
@@ -21,6 +46,7 @@ defineProps<{
 }>();
 
 defineEmits<{
+  /** 拖拽资源项开始 */
   dragStart: [
     item: {
       id: string | number;
@@ -35,6 +61,7 @@ defineEmits<{
       };
     }
   ];
+  /** 点击资源项（仅 template 类型触发，用于加载训练流） */
   itemClick: [
     item: {
       id: string | number;
@@ -49,8 +76,11 @@ defineEmits<{
       };
     }
   ];
+  /** 切换标签页 */
   tabChange: [tab: string];
+  /** 保存工作流到 localStorage */
   saveToLocal: [];
+  /** 从 localStorage 恢复工作流 */
   restoreFromLocal: [];
 }>();
 </script>

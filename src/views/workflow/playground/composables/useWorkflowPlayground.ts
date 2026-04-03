@@ -197,10 +197,12 @@ export function useWorkflowPlayground() {
     );
   });
 
+  /** 是否可以启动执行（未在执行中） */
   const canStartExecution = computed(
     () => !isStepping.value && executionState.value.status !== "running"
   );
 
+  /** 是否可以单步执行（有活跃节点且未结束） */
   const canStepExecution = computed(
     () =>
       !isStepping.value &&
@@ -209,12 +211,15 @@ export function useWorkflowPlayground() {
       executionState.value.status !== "error"
   );
 
+  /** 是否可以自动运行（复用单步条件） */
   const canRunExecution = computed(() => canStepExecution.value);
 
+  /** 是否可以暂停（正在自动运行时） */
   const canPauseExecution = computed(
     () => executionState.value.status === "running" && isAutoRunning.value
   );
 
+  /** 是否可以重置（有执行历史或非初始状态） */
   const canResetExecution = computed(
     () =>
       executionState.value.activeNodeIds.length > 0 ||
@@ -222,6 +227,7 @@ export function useWorkflowPlayground() {
       executionState.value.status !== "idle"
   );
 
+  /** 已执行的步骤数（历史记录长度） */
   const executionStepCount = computed(
     () => executionState.value.history.length
   );
@@ -237,11 +243,13 @@ export function useWorkflowPlayground() {
     { immediate: true }
   );
 
+  /** 统一提交新执行状态，并同步节点的运行时 data（用于节点 UI 状态展示） */
   function commitExecutionState(nextState: typeof executionState.value) {
     executionState.value = nextState;
     syncNodeRuntimeData();
   }
 
+  /** 将执行引擎的节点状态同步到 VueFlow 节点 data 上，驱动 UI 状态变化 */
   function syncNodeRuntimeData() {
     const activeIds = executionState.value.activeNodeIds;
     const latestHistory = executionState.value.history.at(-1);
@@ -266,6 +274,7 @@ export function useWorkflowPlayground() {
     });
   }
 
+  /** 按 $.x.y 格式从上下文中读取嵌套值 */
   function readPath(path: string, source: Record<string, unknown>) {
     if (!path.startsWith("$.")) {
       return undefined;
@@ -284,6 +293,11 @@ export function useWorkflowPlayground() {
       }, source);
   }
 
+  /**
+   * 安全求值条件表达式
+   * 将 $.xxx 形式的路径引用替换为 readPath 调用，然后用 Function 构造器执行
+   * 求值失败时返回 false（不中断流程）
+   */
   function evaluateConditionExpression(expression: string) {
     if (!expression.trim()) {
       return false;
@@ -307,6 +321,7 @@ export function useWorkflowPlayground() {
     }
   }
 
+  /** 按 ID 查找节点，找不到返回 null */
   function getNodeById(nodeId: string | null) {
     if (!nodeId) {
       return null;
@@ -315,6 +330,7 @@ export function useWorkflowPlayground() {
     return nodes.value.find(node => node.id === nodeId) ?? null;
   }
 
+  /** 将指定节点标记为 running 状态，并记录当前上下文快照作为输入 */
   function markNodeRunning(nodeId: string) {
     commitExecutionState({
       ...executionState.value,
@@ -331,6 +347,7 @@ export function useWorkflowPlayground() {
     });
   }
 
+  /** 将 VueFlow Edge 转为引擎兼容的 WorkflowEdgeLike 格式 */
   function toEngineEdge(edge: Edge | null) {
     if (!edge) return null;
     return {
@@ -342,6 +359,7 @@ export function useWorkflowPlayground() {
     };
   }
 
+  /** 包装 advanceBarriers，将 VueFlow 节点/边转为引擎格式后调用 */
   function applyAdvanceBarriers(
     completedNodeId: string,
     currentBarriers: Record<string, number>,
@@ -368,6 +386,7 @@ export function useWorkflowPlayground() {
     );
   }
 
+  /** 单步完成的结果，用于批量汇总 */
   type StepCompletion = {
     nodeId: string;
     edge: Edge | null;
@@ -376,6 +395,11 @@ export function useWorkflowPlayground() {
     nextLoopState?: Record<string, { index: number }>;
   };
 
+  /**
+   * 批量汇总多个步骤的完成结果
+   * 遍历所有 completions，更新 nodeStates、context、loopState、history，
+   * 并通过 advanceBarriers 计算下一批就绪节点，最终提交状态
+   */
   function finalizeMultiStep(completions: StepCompletion[]) {
     if (!completions.length) return;
 
@@ -651,6 +675,7 @@ export function useWorkflowPlayground() {
     ElMessage.success("已从本地恢复");
   }
 
+  /** 校验流程图并启动执行引擎 */
   async function startExecution(initialContext: Record<string, unknown> = {}) {
     const error = validateGraph();
     if (error) {
@@ -684,6 +709,14 @@ export function useWorkflowPlayground() {
     commitExecutionState(nextState);
   }
 
+  /**
+   * 执行一步（批量处理所有活跃节点）
+   * 流程：
+   * 1. 遍历所有 activeNodeIds
+   * 2. end/start/condition/loop 节点直接在本轮同步处理
+   * 3. service 节点并行调用后端 API
+   * 4. 所有结果汇总到 finalizeMultiStep 提交
+   */
   async function stepExecution() {
     if (isStepping.value) {
       return;
@@ -701,12 +734,15 @@ export function useWorkflowPlayground() {
       }
 
       const syncCompletions: StepCompletion[] = [];
+      /** 需要异步调用后端的服务节点列表 */
       const asyncNodes: Node[] = [];
 
+      /** 第一轮：同步处理非服务节点（start/end/condition/loop） */
       for (const nodeId of activeIds) {
         const node = getNodeById(nodeId);
         if (!node) continue;
 
+        /** end 节点：标记完成，无后续边 */
         if (node.type === "end") {
           syncCompletions.push({
             nodeId: node.id,
@@ -715,6 +751,8 @@ export function useWorkflowPlayground() {
           continue;
         }
 
+        /** start 节点：直接通过，查找下一条边 */
+        /** start 节点：直接走 default 出边 */
         if (node.type === "start") {
           const edge = resolveNextEdge({
             currentNode: node,
