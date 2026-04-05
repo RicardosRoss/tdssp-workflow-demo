@@ -92,6 +92,7 @@ function onResourceDragStart(item: {
     nodes?: unknown[];
     edges?: unknown[];
   };
+  initialContext?: Record<string, unknown>;
 }) {
   handleDragStart(item as any);
 }
@@ -100,6 +101,7 @@ async function onTemplateClick(item: {
   name: string;
   dragKind: "template" | "service" | "dataset" | "loop";
   graph?: { nodes?: unknown[]; edges?: unknown[] };
+  initialContext?: Record<string, unknown>;
 }) {
   if (item.dragKind !== "template") return;
 
@@ -113,10 +115,12 @@ async function onTemplateClick(item: {
         type: "warning"
       }
     );
-    applyTemplate(item as Parameters<typeof applyTemplate>[0]);
   } catch {
-    // 用户取消，无需操作
+    // 用户取消确认弹窗，无需操作
+    return;
   }
+
+  applyTemplate(item as Parameters<typeof applyTemplate>[0]);
 }
 
 const resourceItems = computed(() => {

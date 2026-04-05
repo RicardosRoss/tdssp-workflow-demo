@@ -42,6 +42,8 @@ defineProps<{
       nodes?: unknown[];
       edges?: unknown[];
     };
+    /** 模板的初始上下文，启动执行时注入 */
+    initialContext?: Record<string, unknown>;
   }>;
 }>();
 
@@ -59,6 +61,7 @@ defineEmits<{
         nodes?: unknown[];
         edges?: unknown[];
       };
+      initialContext?: Record<string, unknown>;
     }
   ];
   /** 点击资源项（仅 template 类型触发，用于加载训练流） */
@@ -74,6 +77,7 @@ defineEmits<{
         nodes?: unknown[];
         edges?: unknown[];
       };
+      initialContext?: Record<string, unknown>;
     }
   ];
   /** 切换标签页 */

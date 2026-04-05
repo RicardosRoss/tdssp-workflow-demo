@@ -210,9 +210,31 @@ export function buildBarrierMap(
   nodes: WorkflowNodeLike[],
   edges: WorkflowEdgeLike[]
 ): Record<string, number> {
+  /** 查找所有循环节点 ID */
+  const loopNodeIds = new Set(
+    nodes.filter(n => n.type === "loop").map(n => n.id)
+  );
+
+  /**
+   * 识别回环边：从循环体节点出发，目标回到循环节点的边。
+   * 循环节点的 loop-body 出边指向的节点即为循环体，循环体回指循环节点的边不应计入 barrier。
+   */
+  const loopBodyEdges = edges.filter(
+    e => loopNodeIds.has(e.source) && e.sourceHandle === "loop-body"
+  );
+  const loopBodyNodeIds = new Set(loopBodyEdges.map(e => e.target));
+  const backEdgeIds = new Set<string>();
+  for (const edge of edges) {
+    if (loopNodeIds.has(edge.target) && loopBodyNodeIds.has(edge.source)) {
+      backEdgeIds.add(edge.id);
+    }
+  }
+
   /** key: 目标节点 ID, value: 指向它的源节点集合 */
   const sourcesByTarget: Record<string, Set<string>> = {};
   for (const edge of edges) {
+    /** 跳过回环边，不计入 barrier */
+    if (backEdgeIds.has(edge.id)) continue;
     if (!sourcesByTarget[edge.target]) {
       sourcesByTarget[edge.target] = new Set();
     }

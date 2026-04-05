@@ -32,9 +32,13 @@ export const workflowResourceTabs = [
 // 模板克隆
 // ---------------------------------------------------------------------------
 
-/** 深拷贝训练流模板的流程图数据，避免修改原始模板 */
+/**
+ * 深拷贝训练流模板的流程图数据，避免修改原始模板。
+ * 使用 JSON 序列化而非 structuredClone，因为模板数据经过 Vue 响应式系统后
+ * 内部嵌套了 Proxy 对象，structuredClone 无法克隆 Proxy。
+ */
 export function cloneTemplateGraph(template) {
-  return structuredClone(template.graph);
+  return JSON.parse(JSON.stringify(template.graph));
 }
 
 // ---------------------------------------------------------------------------

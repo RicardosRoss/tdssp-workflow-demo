@@ -106,6 +106,7 @@ type DragResource =
       dragKind: "template";
       name: string;
       graph: { nodes?: Node[]; edges?: Edge[] };
+      initialContext?: Record<string, unknown>;
     }
   | {
       dragKind: "service";
@@ -148,6 +149,9 @@ export function useWorkflowPlayground() {
   const executionState = ref(createExecutionState());
   const isStepping = ref(false);
   const isAutoRunning = ref(false);
+
+  /** 当前模板的初始上下文，启动执行时自动注入 */
+  const templateInitialContext = ref<Record<string, unknown>>({});
 
   // ---- 拖拽中间态 ----
   // 记录"当前从服务库拖出来的那条服务"，drop 后消费并清空
@@ -558,6 +562,7 @@ export function useWorkflowPlayground() {
   function applyTemplate(template: {
     name: string;
     graph: { nodes?: Node[]; edges?: Edge[] };
+    initialContext?: Record<string, unknown>;
   }) {
     const graph = cloneTemplateGraph(template);
     if (!graph.nodes?.length && !graph.edges?.length) {
@@ -568,6 +573,7 @@ export function useWorkflowPlayground() {
     edges.value = graph.edges ?? [];
     selectedNodeId.value = null;
     selectedEdgeId.value = null;
+    templateInitialContext.value = template.initialContext ?? {};
     resetExecution();
     ElMessage.success(`已加载训练流：${template.name}`);
   }
@@ -676,7 +682,7 @@ export function useWorkflowPlayground() {
   }
 
   /** 校验流程图并启动执行引擎 */
-  async function startExecution(initialContext: Record<string, unknown> = {}) {
+  async function startExecution(initialContext?: Record<string, unknown>) {
     const error = validateGraph();
     if (error) {
       ElMessage.error(error);
@@ -691,10 +697,13 @@ export function useWorkflowPlayground() {
       data: e.data ?? undefined
     }));
 
+    /** 优先使用调用方传入的上下文，否则使用模板自带的初始上下文 */
+    const context = initialContext ?? templateInitialContext.value;
+
     const nextState = startExecutionState({
       nodes: nodes.value,
       edges: engineEdges,
-      initialContext
+      initialContext: context
     });
 
     if (

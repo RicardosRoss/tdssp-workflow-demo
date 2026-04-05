@@ -95,7 +95,267 @@ function makeEdge(id, source, target, routeKey = "default") {
   return { id, source, target, data: { routeKey } };
 }
 
+/**
+ * 条件分支演示模板共享的节点与边构造辅助。
+ * 生成 Start → Condition → (YES: 数据清洗) / (NO: 隐私求交) → End 的菱形结构。
+ */
+function makeConditionDemoGraph(expression: string) {
+  return {
+    nodes: [
+      {
+        id: "cond-start-1",
+        type: "start",
+        position: { x: 80, y: 200 },
+        data: { label: "开始" }
+      },
+      {
+        id: "cond-1",
+        type: "condition",
+        position: { x: 320, y: 200 },
+        data: {
+          label: `条件: ${expression || "(空)"}`,
+          expression
+        }
+      },
+      {
+        id: "cond-svc-yes",
+        type: "service",
+        position: { x: 620, y: 80 },
+        data: {
+          label: "YES-数据清洗",
+          summary: "条件为真时执行数据清洗",
+          serviceId: 1,
+          outputKey: "cleanResult"
+        }
+      },
+      {
+        id: "cond-svc-no",
+        type: "service",
+        position: { x: 620, y: 340 },
+        data: {
+          label: "NO-隐私求交",
+          summary: "条件为假时执行隐私求交",
+          serviceId: 2,
+          outputKey: "privacyResult"
+        }
+      },
+      {
+        id: "cond-end-1",
+        type: "end",
+        position: { x: 920, y: 200 },
+        data: { label: "结束" }
+      }
+    ],
+    edges: [
+      { id: "cond-e-s-c", source: "cond-start-1", target: "cond-1" },
+      {
+        id: "cond-e-c-yes",
+        source: "cond-1",
+        target: "cond-svc-yes",
+        sourceHandle: "yes",
+        data: { routeKey: "yes" }
+      },
+      {
+        id: "cond-e-c-no",
+        source: "cond-1",
+        target: "cond-svc-no",
+        sourceHandle: "no",
+        data: { routeKey: "no" }
+      },
+      {
+        id: "cond-e-yes-end",
+        source: "cond-svc-yes",
+        target: "cond-end-1"
+      },
+      {
+        id: "cond-e-no-end",
+        source: "cond-svc-no",
+        target: "cond-end-1"
+      }
+    ]
+  };
+}
+
 const WORKFLOW_TEMPLATES = [
+  // ---- 条件分支演示模板 ----
+  {
+    id: "template-condition-basic",
+    name: "条件分支-基础演示",
+    summary: "使用 1 > 0 表达式，验证条件节点基本分支路由（走 YES 分支）",
+    graph: makeConditionDemoGraph("1 > 0")
+  },
+  {
+    id: "template-condition-context",
+    name: "条件分支-上下文变量",
+    summary:
+      "使用 $.score > 80 表达式，需在启动时注入上下文 {score: N} 来决定分支",
+    graph: makeConditionDemoGraph("$.score > 80")
+  },
+  {
+    id: "template-condition-malformed",
+    name: "条件分支-异常表达式",
+    summary: "使用非法表达式 >>>，验证条件节点在求值失败时回退到 NO 分支",
+    graph: makeConditionDemoGraph(">>>")
+  },
+  // ---- 场景模板：条件节点 ----
+  {
+    id: "template-scenario-risk-approval",
+    name: "场景-风控审批条件分支",
+    summary:
+      "根据风险评分自动路由：评分 > 0.8 走高风险通道（TEE 联邦求交），否则走低风险通道（数据清洗）",
+    initialContext: { riskScore: 0.91 },
+    graph: {
+      nodes: [
+        {
+          id: "risk-start",
+          type: "start",
+          position: { x: 80, y: 220 },
+          data: { label: "风控数据输入" }
+        },
+        {
+          id: "risk-cond",
+          type: "condition",
+          position: { x: 320, y: 220 },
+          data: {
+            label: "风险评分判断",
+            expression: "$.riskScore > 0.8"
+          }
+        },
+        {
+          id: "risk-svc-high",
+          type: "service",
+          position: { x: 620, y: 80 },
+          data: {
+            label: "高风险-TEE求交",
+            summary: "高风险通道：调用隐私计算联邦求交",
+            serviceId: 2,
+            outputKey: "highRiskResult"
+          }
+        },
+        {
+          id: "risk-svc-low",
+          type: "service",
+          position: { x: 620, y: 380 },
+          data: {
+            label: "低风险-数据清洗",
+            summary: "低风险通道：执行数据标准化清洗",
+            serviceId: 1,
+            outputKey: "lowRiskResult"
+          }
+        },
+        {
+          id: "risk-end",
+          type: "end",
+          position: { x: 920, y: 220 },
+          data: { label: "审批完成" }
+        }
+      ],
+      edges: [
+        { id: "risk-e-s-c", source: "risk-start", target: "risk-cond" },
+        {
+          id: "risk-e-c-yes",
+          source: "risk-cond",
+          target: "risk-svc-high",
+          sourceHandle: "yes",
+          data: { routeKey: "yes" }
+        },
+        {
+          id: "risk-e-c-no",
+          source: "risk-cond",
+          target: "risk-svc-low",
+          sourceHandle: "no",
+          data: { routeKey: "no" }
+        },
+        {
+          id: "risk-e-yes-end",
+          source: "risk-svc-high",
+          target: "risk-end"
+        },
+        {
+          id: "risk-e-no-end",
+          source: "risk-svc-low",
+          target: "risk-end"
+        }
+      ]
+    }
+  },
+  // ---- 场景模板：循环节点 ----
+  {
+    id: "template-scenario-batch-feature",
+    name: "场景-批量特征工程循环",
+    summary:
+      "遍历 $.items 数组（3 个数据集），对每条数据执行数据清洗服务，完成后汇总输出",
+    initialContext: {
+      items: [
+        { datasetId: "ds-001", name: "用户画像" },
+        { datasetId: "ds-002", name: "交易流水" },
+        { datasetId: "ds-003", name: "行为日志" }
+      ]
+    },
+    graph: {
+      nodes: [
+        {
+          id: "loop-start",
+          type: "start",
+          position: { x: 80, y: 220 },
+          data: { label: "数据集列表" }
+        },
+        {
+          id: "loop-foreach",
+          type: "loop",
+          position: { x: 320, y: 220 },
+          data: {
+            label: "遍历数据集",
+            expression: "for item in $.items",
+            iterationType: "FOR_EACH",
+            maxIterations: 10,
+            itemsPath: "$.items",
+            itemName: "item"
+          }
+        },
+        {
+          id: "loop-svc-clean",
+          type: "service",
+          position: { x: 620, y: 220 },
+          data: {
+            label: "数据清洗",
+            summary: "对当前数据集执行字段标准化清洗",
+            serviceId: 1,
+            outputKey: "cleanResult"
+          }
+        },
+        {
+          id: "loop-end",
+          type: "end",
+          position: { x: 920, y: 220 },
+          data: { label: "批量处理完成" }
+        }
+      ],
+      edges: [
+        { id: "loop-e-s-l", source: "loop-start", target: "loop-foreach" },
+        {
+          id: "loop-e-l-body",
+          source: "loop-foreach",
+          target: "loop-svc-clean",
+          sourceHandle: "loop-body",
+          data: { routeKey: "loop-body" }
+        },
+        {
+          id: "loop-e-l-done",
+          source: "loop-foreach",
+          target: "loop-end",
+          sourceHandle: "done",
+          data: { routeKey: "done" }
+        },
+        {
+          id: "loop-e-body-back",
+          source: "loop-svc-clean",
+          target: "loop-foreach"
+        }
+      ]
+    }
+  },
+  // ---- 原有模板 ----
   {
     id: "template-federated-circle",
     name: "联合圈人模板",

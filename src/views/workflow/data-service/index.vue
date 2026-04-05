@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from "vue";
+import { ElMessage } from "element-plus";
 import {
   getDataServiceList,
   getDataServiceDetail,
@@ -88,7 +89,9 @@ async function fetchData() {
     });
     tableData.value = res.data.content;
     total.value = res.data.totalElements;
-  } catch {
+  } catch (e) {
+    console.error("获取数据服务列表失败:", e);
+    ElMessage.error("获取数据服务列表失败");
     tableData.value = [];
     total.value = 0;
   } finally {
@@ -161,7 +164,9 @@ async function handleView(row: DataServiceResponse) {
   try {
     const res = await getDataServiceDetail(row.id);
     detail.value = res.data;
-  } catch {
+  } catch (e) {
+    ElMessage.error("获取服务详情失败");
+    console.error("获取服务详情失败:", e);
     detail.value = row;
   } finally {
     drawerLoading.value = false;

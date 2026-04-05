@@ -146,6 +146,8 @@ export type WorkflowTemplate = {
     nodes?: Array<Record<string, unknown>>;
     edges?: Array<Record<string, unknown>>;
   };
+  /** 启动执行时注入的初始上下文（条件/循环节点依赖此数据） */
+  initialContext?: Record<string, unknown>;
 };
 
 /** 获取模板列表的响应结构 */
