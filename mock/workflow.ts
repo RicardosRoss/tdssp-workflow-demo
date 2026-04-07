@@ -478,6 +478,8 @@ const LOOP_CONFIGS = [
   }
 ];
 
+const SAVED_WORKFLOW_EXECUTION_LOGS: Array<Record<string, unknown>> = [];
+
 export default defineFakeRoute([
   {
     url: "/api/workflow-playground/templates",
@@ -506,6 +508,27 @@ export default defineFakeRoute([
           savedAt: new Date().toISOString(),
           payload: body
         }
+      };
+    }
+  },
+  {
+    url: "/api/workflow-playground/save-execution-logs",
+    method: "post",
+    response: ({ body }) => {
+      const record = {
+        id: SAVED_WORKFLOW_EXECUTION_LOGS.length + 1,
+        workflowName: body?.workflowName ?? "当前工作流",
+        savedAt: new Date().toISOString(),
+        logCount: Array.isArray(body?.logs) ? body.logs.length : 0,
+        payload: body
+      };
+
+      SAVED_WORKFLOW_EXECUTION_LOGS.push(record);
+
+      return {
+        code: 0,
+        message: "saved",
+        data: record
       };
     }
   },

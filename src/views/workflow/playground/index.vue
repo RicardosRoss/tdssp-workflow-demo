@@ -34,6 +34,7 @@ import ServiceNode from "./nodes/ServiceNode.vue";
 import StartNode from "./nodes/StartNode.vue";
 
 // 子组件
+import ExecutionLogPanel from "./components/ExecutionLogPanel.vue";
 import NodeInspectorPanel from "./components/NodeInspectorPanel.vue";
 import ServiceLibraryPanel from "./components/ServiceLibraryPanel.vue";
 import WorkflowCanvas from "./components/WorkflowCanvas.vue";
@@ -154,6 +155,9 @@ const {
   edges,
   draftNodeData,
   executionState,
+  executionLogs,
+  expandedExecutionLogId,
+  isSavingExecutionLogs,
   // 计算属性
   selectedNode,
   selectedNodeIsService,
@@ -189,6 +193,8 @@ const {
   runExecution,
   pauseExecution,
   resetExecution,
+  toggleExecutionLog,
+  submitExecutionLogs,
   // 删除
   handleDeleteSelectedNode,
   handleDeleteSelectedEdge,
@@ -328,6 +334,14 @@ const currentExecutionNodeLabel = computed(() => {
         @delete="handleDeleteSelectedNode"
       />
     </div>
+
+    <ExecutionLogPanel
+      :logs="executionLogs"
+      :expanded-log-id="expandedExecutionLogId"
+      :is-submitting="isSavingExecutionLogs"
+      @toggle-log="toggleExecutionLog"
+      @submit-logs="submitExecutionLogs"
+    />
   </div>
 </template>
 

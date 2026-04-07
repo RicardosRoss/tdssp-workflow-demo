@@ -23,7 +23,10 @@ import type {
   Node,
   NodeMouseEvent
 } from "@vue-flow/core";
-import { executeWorkflowNode } from "@/api/workflow-playground";
+import {
+  executeWorkflowNode,
+  saveWorkflowExecutionLogs
+} from "@/api/workflow-playground";
 import {
   buildNodeDataUpdate,
   createNodeDraft,
@@ -49,6 +52,12 @@ import {
   createLoopNode,
   createServiceNode
 } from "../resource-library.mjs";
+import {
+  buildSaveExecutionLogsPayload,
+  createRunningExecutionLog,
+  finishExecutionLog,
+  type WorkflowExecutionLog
+} from "../execution-logs";
 
 // ---------------------------------------------------------------------------
 // 初始数据
@@ -149,6 +158,12 @@ export function useWorkflowPlayground() {
   const executionState = ref(createExecutionState());
   const isStepping = ref(false);
   const isAutoRunning = ref(false);
+  const executionLogs = ref<WorkflowExecutionLog[]>([]);
+  const expandedExecutionLogId = ref<string | null>(null);
+  const isSavingExecutionLogs = ref(false);
+  const executionLogStepIndex = ref(0);
+  const runningExecutionLogIds = ref<Record<string, string>>({});
+  const workflowDisplayName = ref("当前工作流");
 
   /** 当前模板的初始上下文，启动执行时自动注入 */
   const templateInitialContext = ref<Record<string, unknown>>({});
@@ -332,6 +347,109 @@ export function useWorkflowPlayground() {
     }
 
     return nodes.value.find(node => node.id === nodeId) ?? null;
+  }
+
+  function getNodeLabel(nodeId: string) {
+    return String(getNodeById(nodeId)?.data?.label ?? nodeId);
+  }
+
+  function clearExecutionLogs() {
+    executionLogs.value = [];
+    expandedExecutionLogId.value = null;
+    executionLogStepIndex.value = 0;
+    runningExecutionLogIds.value = {};
+  }
+
+  function resolveLogNextNodes(edge: Edge | null) {
+    if (!edge?.target) {
+      return [];
+    }
+
+    return [
+      {
+        id: edge.target,
+        label: getNodeLabel(edge.target)
+      }
+    ];
+  }
+
+  function createNodeExecutionLog(node: Node, stepIndex: number) {
+    const startedAt = new Date().toISOString();
+    const logId = `${node.id}-${startedAt}`;
+    const log = createRunningExecutionLog({
+      id: logId,
+      stepIndex,
+      node: {
+        id: node.id,
+        type: node.type ?? "service",
+        data: (node.data ?? {}) as Record<string, unknown>
+      },
+      contextSnapshot: snapshotExecutionContext(executionState.value.context),
+      startedAt
+    });
+
+    executionLogs.value = [log, ...executionLogs.value];
+    runningExecutionLogIds.value = {
+      ...runningExecutionLogIds.value,
+      [node.id]: logId
+    };
+  }
+
+  function completeNodeExecutionLog(
+    nodeId: string,
+    details: Parameters<typeof finishExecutionLog>[1]
+  ) {
+    const logId = runningExecutionLogIds.value[nodeId];
+    if (!logId) {
+      return;
+    }
+
+    executionLogs.value = executionLogs.value.map(log =>
+      log.id === logId ? finishExecutionLog(log, details) : log
+    );
+
+    const nextRunning = { ...runningExecutionLogIds.value };
+    delete nextRunning[nodeId];
+    runningExecutionLogIds.value = nextRunning;
+  }
+
+  function failNodeExecutionLog(nodeId: string, message: string) {
+    completeNodeExecutionLog(nodeId, {
+      status: "error",
+      finishedAt: new Date().toISOString(),
+      nextNodes: [],
+      errorMessage: message
+    });
+  }
+
+  function toggleExecutionLog(logId: string) {
+    expandedExecutionLogId.value =
+      expandedExecutionLogId.value === logId ? null : logId;
+  }
+
+  async function submitExecutionLogs() {
+    if (!executionLogs.value.length || isSavingExecutionLogs.value) {
+      return;
+    }
+
+    isSavingExecutionLogs.value = true;
+    try {
+      const payload = buildSaveExecutionLogsPayload({
+        workflowName: workflowDisplayName.value,
+        logs: [...executionLogs.value].reverse()
+      });
+
+      await saveWorkflowExecutionLogs(payload);
+      ElMessage.success("执行日志已提交到后端");
+    } catch (error) {
+      ElMessage.error(
+        error instanceof Error && error.message
+          ? error.message
+          : "执行日志存储接口未接入"
+      );
+    } finally {
+      isSavingExecutionLogs.value = false;
+    }
   }
 
   /** 将指定节点标记为 running 状态，并记录当前上下文快照作为输入 */
@@ -566,6 +684,7 @@ export function useWorkflowPlayground() {
     selectedNodeId.value = null;
     selectedEdgeId.value = null;
     templateInitialContext.value = template.initialContext ?? {};
+    workflowDisplayName.value = template.name;
     resetExecution();
     ElMessage.success(`已加载训练流：${template.name}`);
   }
@@ -669,6 +788,7 @@ export function useWorkflowPlayground() {
     const graph = JSON.parse(raw);
     nodes.value = graph.nodes ?? [];
     edges.value = graph.edges ?? [];
+    workflowDisplayName.value = "本地恢复工作流";
     resetExecution();
     ElMessage.success("已从本地恢复");
   }
@@ -707,6 +827,7 @@ export function useWorkflowPlayground() {
     }
 
     isAutoRunning.value = false;
+    clearExecutionLogs();
     commitExecutionState(nextState);
   }
 
@@ -730,8 +851,14 @@ export function useWorkflowPlayground() {
     isStepping.value = true;
     try {
       const activeIds = [...executionState.value.activeNodeIds];
+      const stepIndex = executionLogStepIndex.value + 1;
+      executionLogStepIndex.value = stepIndex;
       for (const nodeId of activeIds) {
         markNodeRunning(nodeId);
+        const node = getNodeById(nodeId);
+        if (node) {
+          createNodeExecutionLog(node, stepIndex);
+        }
       }
 
       const syncCompletions: StepCompletion[] = [];
@@ -745,6 +872,14 @@ export function useWorkflowPlayground() {
 
         /** end 节点：标记完成，无后续边 */
         if (node.type === "end") {
+          completeNodeExecutionLog(node.id, {
+            status: "success",
+            finishedAt: new Date().toISOString(),
+            dataOutput: {
+              completed: true
+            },
+            nextNodes: []
+          });
           syncCompletions.push({
             nodeId: node.id,
             edge: null
@@ -758,6 +893,16 @@ export function useWorkflowPlayground() {
           const edge = resolveNextEdge({
             currentNode: node,
             edges: edges.value
+          });
+          completeNodeExecutionLog(node.id, {
+            status: "success",
+            finishedAt: new Date().toISOString(),
+            routeKey: "default",
+            dataOutput: {
+              started: true,
+              contextKeys: Object.keys(executionState.value.context)
+            },
+            nextNodes: resolveLogNextNodes(edge as Edge | null)
           });
           syncCompletions.push({
             nodeId: node.id,
@@ -780,6 +925,16 @@ export function useWorkflowPlayground() {
             currentNode: node,
             edges: edges.value,
             routeKey
+          });
+          completeNodeExecutionLog(node.id, {
+            status: "success",
+            finishedAt: new Date().toISOString(),
+            routeKey,
+            dataOutput: {
+              routeDecision: routeKey,
+              expression: String(node.data?.expression ?? "")
+            },
+            nextNodes: resolveLogNextNodes(edge as Edge | null)
           });
           syncCompletions.push({
             nodeId: node.id,
@@ -823,6 +978,19 @@ export function useWorkflowPlayground() {
             edges: edges.value,
             routeKey: loopResult.routeKey
           });
+          completeNodeExecutionLog(node.id, {
+            status: "success",
+            finishedAt: new Date().toISOString(),
+            routeKey: loopResult.routeKey,
+            dataOutput: {
+              routeDecision: loopResult.routeKey,
+              iterationIndex: loopResult.loopState[node.id]?.index ?? 0,
+              itemName: String(node.data?.itemName ?? ""),
+              currentItem:
+                nextContext?.[String(node.data?.itemName ?? "")] ?? null
+            },
+            nextNodes: resolveLogNextNodes(edge as Edge | null)
+          });
           syncCompletions.push({
             nodeId: node.id,
             edge: edge as Edge | null,
@@ -859,6 +1027,12 @@ export function useWorkflowPlayground() {
           const result = results[i];
 
           if (result.status === "rejected") {
+            failNodeExecutionLog(
+              node.id,
+              result.reason instanceof Error
+                ? result.reason.message
+                : "服务执行失败"
+            );
             commitExecutionState(
               markNodeExecutionError(executionState.value, {
                 nodeId: node.id,
@@ -873,6 +1047,10 @@ export function useWorkflowPlayground() {
           }
 
           if (!result.value.data.success) {
+            failNodeExecutionLog(
+              node.id,
+              result.value.data.error?.message ?? "服务执行失败"
+            );
             commitExecutionState(
               markNodeExecutionError(executionState.value, {
                 nodeId: node.id,
@@ -897,6 +1075,17 @@ export function useWorkflowPlayground() {
             currentNode: node,
             edges: edges.value
           });
+          completeNodeExecutionLog(node.id, {
+            status: "success",
+            finishedAt: new Date().toISOString(),
+            routeKey: "default",
+            dataOutput: {
+              output: result.value.data.output,
+              patchContext: result.value.data.patchContext,
+              metrics: result.value.data.metrics
+            },
+            nextNodes: resolveLogNextNodes(edge as Edge | null)
+          });
           syncCompletions.push({
             nodeId: node.id,
             edge: edge as Edge | null,
@@ -909,6 +1098,10 @@ export function useWorkflowPlayground() {
     } catch (error) {
       const failedNodeId = executionState.value.activeNodeIds[0];
       if (failedNodeId) {
+        failNodeExecutionLog(
+          failedNodeId,
+          error instanceof Error ? error.message : "服务执行失败"
+        );
         commitExecutionState(
           markNodeExecutionError(executionState.value, {
             nodeId: failedNodeId,
@@ -968,6 +1161,7 @@ export function useWorkflowPlayground() {
   function resetExecution() {
     isStepping.value = false;
     isAutoRunning.value = false;
+    clearExecutionLogs();
     commitExecutionState(resetExecutionState(createExecutionState()));
   }
 
@@ -1020,7 +1214,10 @@ export function useWorkflowPlayground() {
     draftNodeData,
     dragResource,
     executionState,
+    executionLogs,
+    expandedExecutionLogId,
     isStepping,
+    isSavingExecutionLogs,
 
     // 计算属性
     selectedNode,
@@ -1064,6 +1261,8 @@ export function useWorkflowPlayground() {
     runExecution,
     pauseExecution,
     resetExecution,
+    toggleExecutionLog,
+    submitExecutionLogs,
 
     // 删除
     handleDeleteSelectedNode,

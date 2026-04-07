@@ -1,4 +1,5 @@
 import { http } from "@/utils/http";
+import type { SaveExecutionLogsPayload } from "@/views/workflow/playground/execution-logs";
 
 // ---------------------------------------------------------------------------
 // 数据服务（组件库）相关类型
@@ -95,6 +96,19 @@ export type ExecuteWorkflowNodeResult = {
   };
 };
 
+/** 保存执行日志后的响应结构 */
+export type SaveExecutionLogsResult = {
+  code: number;
+  message: string;
+  data: {
+    id: number;
+    workflowName: string;
+    savedAt: string;
+    logCount: number;
+    payload: SaveExecutionLogsPayload;
+  };
+};
+
 // ---------------------------------------------------------------------------
 // API 函数 — 数据服务
 // ---------------------------------------------------------------------------
@@ -128,6 +142,15 @@ export const executeWorkflowNode = (data: ExecuteWorkflowNodePayload) => {
   return http.request<ExecuteWorkflowNodeResult>(
     "post",
     "/api/workflow-playground/execute-node",
+    { data }
+  );
+};
+
+/** 显式提交当前运行日志到后端存储 */
+export const saveWorkflowExecutionLogs = (data: SaveExecutionLogsPayload) => {
+  return http.request<SaveExecutionLogsResult>(
+    "post",
+    "/api/workflow-playground/save-execution-logs",
     { data }
   );
 };
