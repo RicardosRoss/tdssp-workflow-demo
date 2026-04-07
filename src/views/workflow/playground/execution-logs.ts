@@ -35,6 +35,38 @@ export type SaveExecutionLogsPayload = {
   logs: WorkflowExecutionLog[];
 };
 
+export type ServiceExecutionResponseData = {
+  success: boolean;
+  output?: unknown;
+  patchContext?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+  error?: {
+    code?: string;
+    message: string;
+  };
+};
+
+export type SettledServiceExecutionItem = {
+  nodeId: string;
+  result: PromiseSettledResult<{
+    data: ServiceExecutionResponseData;
+  }>;
+};
+
+export type SettledServiceExecutionOutcome =
+  | {
+      nodeId: string;
+      status: "success";
+      output?: unknown;
+      patchContext?: Record<string, unknown>;
+      metrics?: Record<string, unknown>;
+    }
+  | {
+      nodeId: string;
+      status: "error";
+      message: string;
+    };
+
 type ExecutionLogNodeLike = {
   id: string;
   type?: string;
@@ -160,4 +192,37 @@ export function buildSaveExecutionLogsPayload({
     finishedAt,
     logs
   };
+}
+
+export function collectSettledServiceExecutionOutcomes(
+  items: SettledServiceExecutionItem[]
+): SettledServiceExecutionOutcome[] {
+  return items.map(({ nodeId, result }) => {
+    if (result.status === "rejected") {
+      return {
+        nodeId,
+        status: "error",
+        message:
+          result.reason instanceof Error
+            ? result.reason.message
+            : "服务执行失败"
+      };
+    }
+
+    if (!result.value.data.success) {
+      return {
+        nodeId,
+        status: "error",
+        message: result.value.data.error?.message ?? "服务执行失败"
+      };
+    }
+
+    return {
+      nodeId,
+      status: "success",
+      output: result.value.data.output,
+      patchContext: result.value.data.patchContext,
+      metrics: result.value.data.metrics
+    };
+  });
 }

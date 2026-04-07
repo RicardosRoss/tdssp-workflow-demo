@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildExecutionLogSummary,
   buildSaveExecutionLogsPayload,
+  collectSettledServiceExecutionOutcomes,
   createRunningExecutionLog,
   finishExecutionLog
 } from "./execution-logs.ts";
@@ -195,4 +196,45 @@ test("buildSaveExecutionLogsPayload preserves workflow metadata and execution or
     payload.logs.map(log => log.id),
     ["log-2", "log-1"]
   );
+});
+
+test("collectSettledServiceExecutionOutcomes keeps later successes after an earlier failure", () => {
+  const outcomes = collectSettledServiceExecutionOutcomes([
+    {
+      nodeId: "service-error",
+      result: {
+        status: "rejected",
+        reason: new Error("timeout")
+      }
+    },
+    {
+      nodeId: "service-success",
+      result: {
+        status: "fulfilled",
+        value: {
+          data: {
+            success: true,
+            output: { count: 2 },
+            patchContext: { traceId: "req-2" },
+            metrics: { durationMs: 40 }
+          }
+        }
+      }
+    }
+  ]);
+
+  assert.deepEqual(outcomes, [
+    {
+      nodeId: "service-error",
+      status: "error",
+      message: "timeout"
+    },
+    {
+      nodeId: "service-success",
+      status: "success",
+      output: { count: 2 },
+      patchContext: { traceId: "req-2" },
+      metrics: { durationMs: 40 }
+    }
+  ]);
 });

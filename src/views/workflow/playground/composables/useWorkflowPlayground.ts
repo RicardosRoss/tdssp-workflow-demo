@@ -54,6 +54,7 @@ import {
 } from "../resource-library.mjs";
 import {
   buildSaveExecutionLogsPayload,
+  collectSettledServiceExecutionOutcomes,
   createRunningExecutionLog,
   finishExecutionLog,
   type WorkflowExecutionLog
@@ -1021,53 +1022,36 @@ export function useWorkflowPlayground() {
             })
           )
         );
+        const serviceOutcomes = collectSettledServiceExecutionOutcomes(
+          asyncNodes.map((node, index) => ({
+            nodeId: node.id,
+            result: results[index]
+          }))
+        );
+        const failedExecutions: Array<{ nodeId: string; message: string }> = [];
 
-        for (let i = 0; i < results.length; i++) {
-          const node = asyncNodes[i];
-          const result = results[i];
-
-          if (result.status === "rejected") {
-            failNodeExecutionLog(
-              node.id,
-              result.reason instanceof Error
-                ? result.reason.message
-                : "服务执行失败"
-            );
-            commitExecutionState(
-              markNodeExecutionError(executionState.value, {
-                nodeId: node.id,
-                message:
-                  result.reason instanceof Error
-                    ? result.reason.message
-                    : "服务执行失败"
-              })
-            );
-            isAutoRunning.value = false;
-            return;
+        for (const outcome of serviceOutcomes) {
+          const node = asyncNodes.find(item => item.id === outcome.nodeId);
+          if (!node) {
+            continue;
           }
 
-          if (!result.value.data.success) {
-            failNodeExecutionLog(
-              node.id,
-              result.value.data.error?.message ?? "服务执行失败"
-            );
-            commitExecutionState(
-              markNodeExecutionError(executionState.value, {
-                nodeId: node.id,
-                message: result.value.data.error?.message ?? "服务执行失败"
-              })
-            );
-            isAutoRunning.value = false;
-            return;
+          if (outcome.status === "error") {
+            failNodeExecutionLog(node.id, outcome.message);
+            failedExecutions.push({
+              nodeId: node.id,
+              message: outcome.message
+            });
+            continue;
           }
 
           commitExecutionState(
             applyServiceExecutionResult(executionState.value, {
               nodeId: node.id,
               nodeData: (node.data ?? {}) as Record<string, unknown>,
-              output: result.value.data.output,
-              patchContext: result.value.data.patchContext,
-              metrics: result.value.data.metrics
+              output: outcome.output,
+              patchContext: outcome.patchContext,
+              metrics: outcome.metrics
             })
           );
 
@@ -1080,9 +1064,9 @@ export function useWorkflowPlayground() {
             finishedAt: new Date().toISOString(),
             routeKey: "default",
             dataOutput: {
-              output: result.value.data.output,
-              patchContext: result.value.data.patchContext,
-              metrics: result.value.data.metrics
+              output: outcome.output,
+              patchContext: outcome.patchContext,
+              metrics: outcome.metrics
             },
             nextNodes: resolveLogNextNodes(edge as Edge | null)
           });
@@ -1091,6 +1075,21 @@ export function useWorkflowPlayground() {
             edge: edge as Edge | null,
             routeKey: "default"
           });
+        }
+
+        if (failedExecutions.length > 0) {
+          const erroredState = failedExecutions.reduce(
+            (state, failure) =>
+              markNodeExecutionError(state, {
+                nodeId: failure.nodeId,
+                message: failure.message
+              }),
+            executionState.value
+          );
+
+          commitExecutionState(erroredState);
+          isAutoRunning.value = false;
+          return;
         }
       }
 
