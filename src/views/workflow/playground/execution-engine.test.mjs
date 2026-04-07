@@ -4,6 +4,7 @@ import {
   createExecutionState,
   findStartNodeId,
   resolveNextEdge,
+  resolveTriggeredTargetNodes,
   applyServiceExecutionResult,
   advanceLoopState,
   startExecutionState,
@@ -57,6 +58,100 @@ test("advanceLoopState routes to done when iteration reaches array end", () => {
   });
 
   assert.equal(result.routeKey, "done");
+});
+
+test("resolveTriggeredTargetNodes readies a join after one branch succeeds and the sibling branch is skipped", () => {
+  const nodes = [
+    { id: "cond-1", type: "condition", data: {} },
+    { id: "yes-service", type: "service", data: {} },
+    { id: "no-service", type: "service", data: {} },
+    { id: "end-1", type: "end", data: {} }
+  ];
+  const edges = [
+    {
+      id: "cond-yes",
+      source: "cond-1",
+      target: "yes-service",
+      data: { routeKey: "yes" }
+    },
+    {
+      id: "cond-no",
+      source: "cond-1",
+      target: "no-service",
+      data: { routeKey: "no" }
+    },
+    { id: "yes-end", source: "yes-service", target: "end-1" },
+    { id: "no-end", source: "no-service", target: "end-1" }
+  ];
+
+  const result = resolveTriggeredTargetNodes({
+    nodes,
+    edges,
+    nodeStates: {
+      "cond-1": { status: "success" },
+      "yes-service": { status: "success" },
+      "no-service": { status: "skipped" }
+    },
+    targetNodeIds: ["end-1"]
+  });
+
+  assert.deepEqual(result.readyNodeIds, ["end-1"]);
+  assert.deepEqual(result.skippedNodeIds, []);
+});
+
+test("resolveTriggeredTargetNodes propagates skipped-only descendants", () => {
+  const nodes = [
+    { id: "branch-a", type: "service", data: {} },
+    { id: "branch-b", type: "service", data: {} },
+    { id: "branch-end", type: "end", data: {} }
+  ];
+  const edges = [
+    { id: "a-b", source: "branch-a", target: "branch-b" },
+    { id: "b-end", source: "branch-b", target: "branch-end" }
+  ];
+
+  const result = resolveTriggeredTargetNodes({
+    nodes,
+    edges,
+    nodeStates: {
+      "branch-a": { status: "skipped" }
+    },
+    targetNodeIds: ["branch-b"]
+  });
+
+  assert.deepEqual(result.readyNodeIds, []);
+  assert.deepEqual(result.skippedNodeIds, ["branch-b", "branch-end"]);
+});
+
+test("resolveTriggeredTargetNodes ignores loop back edges when entering the first iteration", () => {
+  const nodes = [
+    { id: "start-1", type: "start", data: {} },
+    { id: "loop-1", type: "loop", data: {} },
+    { id: "service-1", type: "service", data: {} }
+  ];
+  const edges = [
+    { id: "start-loop", source: "start-1", target: "loop-1" },
+    {
+      id: "loop-body",
+      source: "loop-1",
+      target: "service-1",
+      sourceHandle: "loop-body",
+      data: { routeKey: "loop-body" }
+    },
+    { id: "service-back", source: "service-1", target: "loop-1" }
+  ];
+
+  const result = resolveTriggeredTargetNodes({
+    nodes,
+    edges,
+    nodeStates: {
+      "start-1": { status: "success" }
+    },
+    targetNodeIds: ["loop-1"]
+  });
+
+  assert.deepEqual(result.readyNodeIds, ["loop-1"]);
+  assert.deepEqual(result.skippedNodeIds, []);
 });
 
 test("applyServiceExecutionResult merges normalized backend patchContext", () => {

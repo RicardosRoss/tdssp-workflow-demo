@@ -13,7 +13,7 @@
  */
 
 import { computed, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { MarkerType, useVueFlow } from "@vue-flow/core";
 import type {
   Connection,
@@ -31,7 +31,6 @@ import {
   type NodePanelDraft
 } from "../node-panel";
 import {
-  advanceBarriers,
   advanceLoopState,
   applyServiceExecutionResult,
   createExecutionState,
@@ -39,6 +38,7 @@ import {
   markNodeExecutionError,
   resetExecutionState,
   resolveNextEdge,
+  resolveTriggeredTargetNodes,
   snapshotExecutionContext,
   startExecutionState,
   validateRunnableGraph
@@ -351,45 +351,6 @@ export function useWorkflowPlayground() {
     });
   }
 
-  /** 将 VueFlow Edge 转为引擎兼容的 WorkflowEdgeLike 格式 */
-  function toEngineEdge(edge: Edge | null) {
-    if (!edge) return null;
-    return {
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      sourceHandle: edge.sourceHandle ?? null,
-      data: edge.data ?? undefined
-    };
-  }
-
-  /** 包装 advanceBarriers，将 VueFlow 节点/边转为引擎格式后调用 */
-  function applyAdvanceBarriers(
-    completedNodeId: string,
-    currentBarriers: Record<string, number>,
-    selectedEdge: Edge | null
-  ): { barriers: Record<string, number>; newlyReady: string[] } {
-    const engineEdges = edges.value.map(e => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      sourceHandle: e.sourceHandle ?? null,
-      data: e.data ?? undefined
-    }));
-    const engineNodes = nodes.value.map(n => ({
-      id: n.id,
-      type: n.type ?? undefined,
-      data: n.data as Record<string, unknown> | undefined
-    }));
-    return advanceBarriers(
-      completedNodeId,
-      engineEdges,
-      currentBarriers,
-      engineNodes,
-      toEngineEdge(selectedEdge)
-    );
-  }
-
   /** 单步完成的结果，用于批量汇总 */
   type StepCompletion = {
     nodeId: string;
@@ -397,24 +358,36 @@ export function useWorkflowPlayground() {
     routeKey?: string;
     nextContext?: Record<string, unknown>;
     nextLoopState?: Record<string, { index: number }>;
+    skippedTargetIds?: string[];
   };
 
   /**
    * 批量汇总多个步骤的完成结果
    * 遍历所有 completions，更新 nodeStates、context、loopState、history，
-   * 并通过 advanceBarriers 计算下一批就绪节点，最终提交状态
+   * 并基于 success/skipped 前驱动态解析下一批就绪节点，最终提交状态
    */
   function finalizeMultiStep(completions: StepCompletion[]) {
     if (!completions.length) return;
 
     let nextContext = { ...executionState.value.context };
     let nextLoopState = { ...executionState.value.loopState };
-    let currentBarriers = { ...executionState.value.pendingBarriers };
     const nextNodeStates: typeof executionState.value.nodeStates = {
       ...executionState.value.nodeStates
     };
     const nextHistory = [...executionState.value.history];
-    const newlyReadySet = new Set<string>();
+    const triggeredTargetIds: string[] = [];
+    const engineEdges = edges.value.map(edge => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle ?? null,
+      data: edge.data ?? undefined
+    }));
+    const engineNodes = nodes.value.map(node => ({
+      id: node.id,
+      type: node.type ?? undefined,
+      data: node.data as Record<string, unknown> | undefined
+    }));
 
     for (const completion of completions) {
       nextNodeStates[completion.nodeId] = {
@@ -436,19 +409,38 @@ export function useWorkflowPlayground() {
       }
 
       if (completion.edge?.target) {
-        const { barriers, newlyReady } = applyAdvanceBarriers(
-          completion.nodeId,
-          currentBarriers,
-          completion.edge
-        );
-        currentBarriers = barriers;
-        for (const id of newlyReady) {
-          newlyReadySet.add(id);
+        triggeredTargetIds.push(completion.edge.target);
+      }
+
+      for (const skippedNodeId of completion.skippedTargetIds ?? []) {
+        nextNodeStates[skippedNodeId] = {
+          ...nextNodeStates[skippedNodeId],
+          status: "skipped"
+        };
+
+        for (const edge of edges.value) {
+          if (edge.source === skippedNodeId) {
+            triggeredTargetIds.push(edge.target);
+          }
         }
       }
     }
 
-    const activeNodeIds = [...newlyReadySet];
+    const resolution = resolveTriggeredTargetNodes({
+      nodes: engineNodes,
+      edges: engineEdges,
+      nodeStates: nextNodeStates,
+      targetNodeIds: triggeredTargetIds
+    });
+
+    for (const skippedNodeId of resolution.skippedNodeIds) {
+      nextNodeStates[skippedNodeId] = {
+        ...nextNodeStates[skippedNodeId],
+        status: "skipped"
+      };
+    }
+
+    const activeNodeIds = resolution.readyNodeIds;
     for (const id of activeNodeIds) {
       nextNodeStates[id] = {
         ...nextNodeStates[id],
@@ -461,7 +453,7 @@ export function useWorkflowPlayground() {
       status: activeNodeIds.length > 0 ? "running" : "success",
       currentNodeId: activeNodeIds[0] ?? null,
       activeNodeIds,
-      pendingBarriers: currentBarriers,
+      pendingBarriers: resolution.pendingBarriers,
       context: nextContext,
       loopState: nextLoopState,
       history: nextHistory,
@@ -781,6 +773,9 @@ export function useWorkflowPlayground() {
           )
             ? "yes"
             : "no";
+          const outgoingEdges = edges.value.filter(
+            edge => edge.source === node.id
+          );
           const edge = resolveNextEdge({
             currentNode: node,
             edges: edges.value,
@@ -789,7 +784,10 @@ export function useWorkflowPlayground() {
           syncCompletions.push({
             nodeId: node.id,
             edge: edge as Edge | null,
-            routeKey
+            routeKey,
+            skippedTargetIds: outgoingEdges
+              .filter(candidate => candidate.id !== edge?.id)
+              .map(candidate => candidate.target)
           });
           continue;
         }
@@ -981,9 +979,19 @@ export function useWorkflowPlayground() {
       return;
     }
 
-    removeNodes([selectedNode.value.id], true);
-    selectedNodeId.value = null;
-    resetExecution();
+    ElMessageBox.confirm("确定删除该节点及其关联连线？", "删除确认", {
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+      type: "warning"
+    })
+      .then(() => {
+        removeNodes([selectedNode.value!.id], true);
+        selectedNodeId.value = null;
+        resetExecution();
+      })
+      .catch(() => {
+        // 用户取消，不做任何操作
+      });
   }
 
   /** 删除当前选中的边 */

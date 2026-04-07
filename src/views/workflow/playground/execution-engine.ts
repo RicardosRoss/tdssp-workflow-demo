@@ -13,7 +13,7 @@
  */
 import { isReactive, toRaw } from "vue";
 
-// ---------------------------------------------------------------------------
+// ------------------------------------··---------------------------------------
 // 类型定义
 // ---------------------------------------------------------------------------
 
@@ -210,31 +210,9 @@ export function buildBarrierMap(
   nodes: WorkflowNodeLike[],
   edges: WorkflowEdgeLike[]
 ): Record<string, number> {
-  /** 查找所有循环节点 ID */
-  const loopNodeIds = new Set(
-    nodes.filter(n => n.type === "loop").map(n => n.id)
-  );
-
-  /**
-   * 识别回环边：从循环体节点出发，目标回到循环节点的边。
-   * 循环节点的 loop-body 出边指向的节点即为循环体，循环体回指循环节点的边不应计入 barrier。
-   */
-  const loopBodyEdges = edges.filter(
-    e => loopNodeIds.has(e.source) && e.sourceHandle === "loop-body"
-  );
-  const loopBodyNodeIds = new Set(loopBodyEdges.map(e => e.target));
-  const backEdgeIds = new Set<string>();
-  for (const edge of edges) {
-    if (loopNodeIds.has(edge.target) && loopBodyNodeIds.has(edge.source)) {
-      backEdgeIds.add(edge.id);
-    }
-  }
-
   /** key: 目标节点 ID, value: 指向它的源节点集合 */
   const sourcesByTarget: Record<string, Set<string>> = {};
-  for (const edge of edges) {
-    /** 跳过回环边，不计入 barrier */
-    if (backEdgeIds.has(edge.id)) continue;
+  for (const edge of collectNonBackEdges(nodes, edges)) {
     if (!sourcesByTarget[edge.target]) {
       sourcesByTarget[edge.target] = new Set();
     }
@@ -247,6 +225,84 @@ export function buildBarrierMap(
     }
   }
   return barriers;
+}
+
+/**
+ * 根据最新完成/跳过的前驱，解析哪些目标节点应进入 ready 或 skipped。
+ * 与静态 barrier 不同，这里基于"前驱是否已 resolved（success/skipped）"动态判断，
+ * 从而支持条件分支未选中路径的跳过传播与汇合节点激活。
+ */
+export function resolveTriggeredTargetNodes({
+  nodes,
+  edges,
+  nodeStates,
+  targetNodeIds
+}: {
+  nodes: WorkflowNodeLike[];
+  edges: WorkflowEdgeLike[];
+  nodeStates: WorkflowExecutionState["nodeStates"];
+  targetNodeIds: string[];
+}) {
+  const incomingEdgesByTarget = buildIncomingEdgesByTarget(nodes, edges);
+  const outgoingEdgesBySource = buildOutgoingEdgesBySource(edges);
+  const readyNodeIds = new Set<string>();
+  const skippedNodeIds = new Set<string>();
+  const pendingBarriers: Record<string, number> = {};
+  const workingNodeStates: WorkflowExecutionState["nodeStates"] = {
+    ...nodeStates
+  };
+  const queue = [...new Set(targetNodeIds)];
+
+  while (queue.length > 0) {
+    const targetNodeId = queue.shift()!;
+    const targetNode = nodes.find(node => node.id === targetNodeId);
+    if (!targetNode || targetNode.type === "start") {
+      continue;
+    }
+
+    const incomingEdges = incomingEdgesByTarget[targetNodeId] ?? [];
+    if (!incomingEdges.length) {
+      continue;
+    }
+
+    const sourceStatuses = incomingEdges.map(
+      edge => workingNodeStates[edge.source]?.status ?? "idle"
+    );
+    const unresolvedCount = sourceStatuses.filter(
+      status => status !== "success" && status !== "skipped"
+    ).length;
+
+    if (unresolvedCount > 0) {
+      pendingBarriers[targetNodeId] = unresolvedCount;
+      continue;
+    }
+
+    delete pendingBarriers[targetNodeId];
+
+    if (sourceStatuses.every(status => status === "skipped")) {
+      if (workingNodeStates[targetNodeId]?.status !== "skipped") {
+        skippedNodeIds.add(targetNodeId);
+        workingNodeStates[targetNodeId] = {
+          ...workingNodeStates[targetNodeId],
+          status: "skipped"
+        };
+        for (const edge of outgoingEdgesBySource[targetNodeId] ?? []) {
+          queue.push(edge.target);
+        }
+      }
+      continue;
+    }
+
+    if (workingNodeStates[targetNodeId]?.status !== "running") {
+      readyNodeIds.add(targetNodeId);
+    }
+  }
+
+  return {
+    readyNodeIds: [...readyNodeIds],
+    skippedNodeIds: [...skippedNodeIds],
+    pendingBarriers
+  };
 }
 
 /**
@@ -590,6 +646,63 @@ function readArrayByPath(
   }
 
   return Array.isArray(current) ? current : [];
+}
+
+function collectNonBackEdges(
+  nodes: WorkflowNodeLike[],
+  edges: WorkflowEdgeLike[]
+) {
+  /** 查找所有循环节点 ID */
+  const loopNodeIds = new Set(
+    nodes.filter(n => n.type === "loop").map(n => n.id)
+  );
+
+  /**
+   * 识别回环边：从循环体节点出发，目标回到循环节点的边。
+   * 循环节点的 loop-body 出边指向的节点即为循环体，循环体回指循环节点的边不应计入前驱依赖。
+   */
+  const loopBodyEdges = edges.filter(
+    e => loopNodeIds.has(e.source) && e.sourceHandle === "loop-body"
+  );
+  const loopBodyNodeIds = new Set(loopBodyEdges.map(e => e.target));
+  const backEdgeIds = new Set<string>();
+
+  for (const edge of edges) {
+    if (loopNodeIds.has(edge.target) && loopBodyNodeIds.has(edge.source)) {
+      backEdgeIds.add(edge.id);
+    }
+  }
+
+  return edges.filter(edge => !backEdgeIds.has(edge.id));
+}
+
+function buildIncomingEdgesByTarget(
+  nodes: WorkflowNodeLike[],
+  edges: WorkflowEdgeLike[]
+) {
+  const incomingEdgesByTarget: Record<string, WorkflowEdgeLike[]> = {};
+
+  for (const edge of collectNonBackEdges(nodes, edges)) {
+    if (!incomingEdgesByTarget[edge.target]) {
+      incomingEdgesByTarget[edge.target] = [];
+    }
+    incomingEdgesByTarget[edge.target].push(edge);
+  }
+
+  return incomingEdgesByTarget;
+}
+
+function buildOutgoingEdgesBySource(edges: WorkflowEdgeLike[]) {
+  const outgoingEdgesBySource: Record<string, WorkflowEdgeLike[]> = {};
+
+  for (const edge of edges) {
+    if (!outgoingEdgesBySource[edge.source]) {
+      outgoingEdgesBySource[edge.source] = [];
+    }
+    outgoingEdgesBySource[edge.source].push(edge);
+  }
+
+  return outgoingEdgesBySource;
 }
 
 /**
